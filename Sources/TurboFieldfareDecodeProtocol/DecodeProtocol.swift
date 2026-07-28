@@ -62,11 +62,24 @@ public struct DecodeLoadRequest: Codable, Sendable {
     }
 }
 
+public struct DecodeGenerationMessage: Codable, Sendable, Equatable {
+    public enum Role: String, Codable, Sendable {
+        case system
+        case user
+        case assistant
+    }
+
+    public var role: Role
+    public var content: String
+
+    public init(role: Role, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
 public struct DecodeGenerationRequest: Codable, Sendable {
-    /// One user turn, never a rendered transcript. In conversation mode the
-    /// service appends exactly this onto the retained KV; re-rendering history
-    /// here would destabilise the token prefix the cache is built on.
-    public var prompt: String
+    public var messages: [DecodeGenerationMessage]
     public var imageAttachments: [DecodeImageAttachment]?
     public var maxNewTokens: Int
     public var maxContextTokens: Int
@@ -95,6 +108,10 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     /// silently reordered conversation.
     public var turnIndex: Int?
 
+    public var prompt: String {
+        messages.last(where: { $0.role == .user })?.content ?? ""
+    }
+
     public init(prompt: String,
                 imageAttachments: [DecodeImageAttachment]? = nil,
                 maxNewTokens: Int, maxContextTokens: Int,
@@ -106,7 +123,7 @@ public struct DecodeGenerationRequest: Codable, Sendable {
                 turnIndex: Int? = nil) {
         self.conversationEpoch = conversationEpoch
         self.turnIndex = turnIndex
-        self.prompt = prompt
+        self.messages = [DecodeGenerationMessage(role: .user, content: prompt)]
         self.imageAttachments = imageAttachments
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
@@ -116,6 +133,32 @@ public struct DecodeGenerationRequest: Codable, Sendable {
         self.repetitionPenalty = repetitionPenalty
         self.runtimeOptions = runtimeOptions
         self.generationID = generationID
+    }
+
+    public init(messages: [DecodeGenerationMessage],
+                imageAttachments: [DecodeImageAttachment]? = nil,
+                maxNewTokens: Int,
+                maxContextTokens: Int,
+                temperature: Float,
+                topK: Int? = nil,
+                topP: Float? = nil,
+                repetitionPenalty: Float = 1,
+                runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
+                generationID: UUID = UUID(),
+                conversationEpoch: UUID? = nil,
+                turnIndex: Int? = nil) {
+        self.messages = messages
+        self.imageAttachments = imageAttachments
+        self.maxNewTokens = maxNewTokens
+        self.maxContextTokens = maxContextTokens
+        self.temperature = temperature
+        self.topK = topK
+        self.topP = topP
+        self.repetitionPenalty = repetitionPenalty
+        self.runtimeOptions = runtimeOptions
+        self.generationID = generationID
+        self.conversationEpoch = conversationEpoch
+        self.turnIndex = turnIndex
     }
 }
 

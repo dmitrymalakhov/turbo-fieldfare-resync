@@ -51,11 +51,12 @@ final class GenerationTaskRegistry: Sendable {
 
 }
 
-/// Real-model inference client for the Mac app. Wraps the same raw-completion
-/// loop the CLI uses (`runRawCompletion`, BOS + verbatim encode, no chat
-/// template) behind the `AppInferenceClient` event stream, with an explicit
-/// load lifecycle so the resident weights stay warm across generations.
-public final class RealInferenceClient: AppModelLifecycleClient, @unchecked Sendable {
+/// Real-model inference client for the Mac app. Renders the pinned chat
+/// template, then wraps the same raw-completion loop the CLI uses behind the
+/// `AppInferenceClient` event stream. Its explicit load lifecycle keeps the
+/// resident weights warm across generations.
+public final class RealInferenceClient: AppModelLifecycleClient,
+    AppGenerationContextReporting, @unchecked Sendable {
     private let session: RealInferenceSession
     /// Bytes of image tower held mapped, readable without awaiting the session.
     public var currentVisionTowerBytes: UInt64? {
@@ -141,6 +142,17 @@ public final class RealInferenceClient: AppModelLifecycleClient, @unchecked Send
                 generationTasks.take(generationID)?.cancel()
             }
         }
+    }
+
+    public func prepare(_ request: AppGenerationRequest) async throws
+        -> AppGenerationRequest {
+        try await AppGenerationContextWindow.prepareUsingModelTokenizer(request)
+    }
+
+    public func prepareWithContextReport(_ request: AppGenerationRequest) async throws
+        -> AppPreparedGenerationRequest {
+        try await AppGenerationContextWindow
+            .prepareUsingModelTokenizerWithReport(request)
     }
 
     public func cancel() {
@@ -432,9 +444,8 @@ actor RealInferenceSession {
             let promptIds: [Int32]
             let multimodalInput: MultimodalPrefillInput?
             if request.imageAttachments.isEmpty {
-                let renderedPrompt = try tokenizer.applyChatTemplate([
-                    GFTokenizer.Message(role: .user, content: request.prompt)
-                ])
+                let renderedPrompt = try tokenizer.applyChatTemplate(
+                    request.messages.map(Self.tokenizerMessage))
                 promptIds = tokenizer.encode(renderedPrompt, addBOS: false)
                 multimodalInput = nil
             } else {
@@ -462,12 +473,21 @@ actor RealInferenceSession {
                         residencyPolicy: request.runtimeOptions.visionResidencyPolicy,
                         checkCancellation: { try Task.checkCancellation() })
                 }
-                var content = request.imageAttachments.map {
-                    MultimodalContentPart.image(id: $0.id)
+                let lastUserIndex = request.messages.lastIndex { $0.role == .user }
+                let messages = request.messages.enumerated().map { index, message in
+                    var content: [MultimodalContentPart] = []
+                    if index == lastUserIndex {
+                        content.append(contentsOf: request.imageAttachments.map {
+                            .image(id: $0.id)
+                        })
+                    }
+                    if !message.content.isEmpty { content.append(.text(message.content)) }
+                    return MultimodalMessage(
+                        role: Self.tokenizerMessage(message).role,
+                        content: content)
                 }
-                if !request.prompt.isEmpty { content.append(.text(request.prompt)) }
                 let input = try MultimodalPromptRenderer.render(
-                    messages: [MultimodalMessage(role: .user, content: content)],
+                    messages: messages,
                     featuresByID: features,
                     tokenizer: tokenizer)
                 promptIds = input.effectiveTokenIDs
@@ -841,6 +861,17 @@ actor RealInferenceSession {
         case .cancelled: return .cancelled
         case .toolCalls: return .toolCalls
         }
+    }
+
+    private static func tokenizerMessage(
+        _ message: AppGenerationMessage
+    ) -> GFTokenizer.Message {
+        let role: GFTokenizer.Role = switch message.role {
+        case .system: .system
+        case .user: .user
+        case .assistant: .assistant
+        }
+        return GFTokenizer.Message(role: role, content: message.content)
     }
 
     internal static func prefillFailureDiagnostics(config: PrefillRuntimeConfig,

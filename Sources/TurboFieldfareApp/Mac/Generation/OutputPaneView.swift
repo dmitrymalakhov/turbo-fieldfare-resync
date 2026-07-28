@@ -24,6 +24,27 @@ struct OutputPaneView: View {
                 responseCopyFeedbackID = nil
             }
         }
+        .contextMenu {
+            Button("Copy response") {
+                copyResponse()
+            }
+            .disabled(model.outputResponsePlainText.isEmpty)
+
+            Button("Copy prompt") {
+                copy(model.outputPromptText)
+            }
+            .disabled(model.outputPromptText.isEmpty)
+
+            Button("Copy conversation") {
+                copy(model.outputConversationPlainText)
+            }
+            .disabled(model.outputConversationPlainText.isEmpty)
+
+            Divider()
+
+            Button("Clear chat history") { model.clearOutput() }
+                .disabled(model.isRunning || !model.hasOutputTranscript)
+        }
     }
 
     private var placeholder: some View {
@@ -40,9 +61,11 @@ struct OutputPaneView: View {
 
     private var transcript: some View {
         IncrementalTranscriptView(
-            history: model.transcriptHistory,
-            contextBreak: model.transcriptContextBreak,
-            conversationEpoch: model.conversation.epoch,
+            messages: model.transcriptBaseMessages.map { message in
+                InstructionTranscriptMessage(
+                    role: message.role == .user ? .user : .assistant,
+                    content: message.content)
+            },
             lastAnswer: model.outputResponsePlainText,
             conversationPlainText: model.outputConversationPlainText,
             requestNewChat: model.isRunning ? nil : { model.newChat() },
@@ -54,6 +77,7 @@ struct OutputPaneView: View {
             showsPrefillPlaceholder: model.isRunning
                 && model.outputResponsePlainText.isEmpty,
             runIdentity: model.runIdentity)
+            .id(model.selectedChatID)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
                 if !model.isRunning && !model.outputResponsePlainText.isEmpty {
@@ -335,11 +359,7 @@ private struct LoadingModelText: View {
 }
 
 private struct IncrementalTranscriptView: NSViewRepresentable {
-    var history: [(user: AppChatTurn, assistant: AppChatTurn)] = []
-    /// Pairs above this index are on screen but no longer in the model's
-    /// context. Nil when everything drawn is still in the KV.
-    var contextBreak: Int?
-    var conversationEpoch: UUID = UUID()
+    var messages: [InstructionTranscriptMessage]
     var lastAnswer: String = ""
     var conversationPlainText: String = ""
     var requestNewChat: (() -> Void)?
@@ -356,6 +376,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var textView: NSTextView?
         var mailbox: GenerationTranscriptMailbox?
+        var messages: [InstructionTranscriptMessage] = []
         var prompt = ""
         var promptPrefix = NSAttributedString()
         var promptPrefixIdentifier = ""
@@ -434,9 +455,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         func synchronize(
-            history: [(user: AppChatTurn, assistant: AppChatTurn)],
-            contextBreak: Int?,
-            conversationEpoch: UUID,
+            messages: [InstructionTranscriptMessage],
             lastAnswer: String,
             conversationPlainText: String,
             requestNewChat: (() -> Void)?,
@@ -456,11 +475,10 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             self.lastAnswer = lastAnswer
             self.conversationPlainText = conversationPlainText
             self.requestNewChat = requestNewChat
-            adoptConversation(conversationEpoch, history: history,
-                              contextBreak: contextBreak,
-                              startedNewRun: startedNewRun,
-                              firstSynchronize: firstSynchronize)
-            self.mailbox = mailbox
+            _ = firstSynchronize
+            let activeMailbox = isTerminal ? nil : mailbox
+            self.mailbox = activeMailbox
+            self.messages = messages
             self.prompt = prompt
             let prefixIdentifier = images.map {
                 "\($0.id.uuidString):\($0.sha256)"
@@ -472,9 +490,13 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             }
             self.isTerminal = isTerminal
             self.showsPrefillPlaceholder = showsPrefillPlaceholder
-            let response = mailbox?.drain().completeText ?? output
+            let response = InstructionTranscriptDocumentController
+                .resolvedResponse(
+                    output: output,
+                    streamedResponse: activeMailbox?.drain().completeText,
+                    isTerminal: isTerminal)
             apply(
-                prompt: prompt,
+                messages: messages,
                 response: response,
                 isTerminal: isTerminal,
                 showsPrefillPlaceholder: showsPrefillPlaceholder,
@@ -603,7 +625,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                     || snapshot.completeText != documentController.response else {
                 return
             }
-            apply(prompt: prompt,
+            apply(messages: messages,
                   response: snapshot.completeText,
                   isTerminal: isTerminal,
                   showsPrefillPlaceholder: showsPrefillPlaceholder,
@@ -672,7 +694,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         private func apply(
-            prompt: String,
+            messages: [InstructionTranscriptMessage],
             response: String,
             isTerminal: Bool,
             showsPrefillPlaceholder: Bool,
@@ -685,7 +707,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             storage.beginEditing()
             let update = documentController.synchronize(
                 storage: storage,
-                prompt: prompt,
+                history: messages,
                 response: response,
                 isTerminal: isTerminal,
                 showsPrefillPlaceholder: showsPrefillPlaceholder,
@@ -757,7 +779,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                 let prefix = Self.makePromptPrefix(images)
                 self.promptPrefix = prefix
                 self.apply(
-                    prompt: self.prompt,
+                    messages: self.messages,
                     response: self.documentController.response,
                     isTerminal: self.isTerminal,
                     showsPrefillPlaceholder: self.showsPrefillPlaceholder,
@@ -848,9 +870,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.attach(scrollView: scrollView, textView: textView)
         context.coordinator.synchronize(
-            history: history,
-            contextBreak: contextBreak,
-            conversationEpoch: conversationEpoch,
+            messages: messages,
             lastAnswer: lastAnswer,
             conversationPlainText: conversationPlainText,
             requestNewChat: requestNewChat,
@@ -876,6 +896,11 @@ private struct TranscriptPreview: View {
 
     var body: some View {
         IncrementalTranscriptView(
+            messages: [
+                InstructionTranscriptMessage(
+                    role: .user,
+                    content: "Explain this clearly."),
+            ],
             prompt: "Explain this clearly.",
             output: response,
             mailbox: nil,

@@ -1,9 +1,25 @@
 import Foundation
 import TurboFieldfare
 
+public struct AppGenerationMessage: Codable, Equatable, Sendable {
+    public enum Role: String, Codable, Equatable, Sendable {
+        case system
+        case user
+        case assistant
+    }
+
+    public var role: Role
+    public var content: String
+
+    public init(role: Role, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
 public struct AppGenerationRequest: Equatable, Sendable {
     public var modelDirectory: URL
-    public var prompt: String
+    public var messages: [AppGenerationMessage]
     public var imageAttachments: [AppImageAttachment]
     public var maxNewTokens: Int
     public var maxContextTokens: Int
@@ -29,6 +45,15 @@ public struct AppGenerationRequest: Equatable, Sendable {
     public var conversationEpoch: UUID?
     public var turnIndex: Int?
 
+    public var prompt: String {
+        get {
+            messages.last(where: { $0.role == .user })?.content ?? ""
+        }
+        set {
+            messages = [AppGenerationMessage(role: .user, content: newValue)]
+        }
+    }
+
     public init(modelDirectory: URL,
                 prompt: String,
                 imageAttachments: [AppImageAttachment] = [],
@@ -48,7 +73,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
         self.conversationEpoch = conversationEpoch
         self.turnIndex = turnIndex
         self.modelDirectory = modelDirectory
-        self.prompt = prompt
+        self.messages = [AppGenerationMessage(role: .user, content: prompt)]
         self.imageAttachments = imageAttachments
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
@@ -59,15 +84,58 @@ public struct AppGenerationRequest: Equatable, Sendable {
         self.runtimeOptions = runtimeOptions
     }
 
+    public init(modelDirectory: URL,
+                messages: [AppGenerationMessage],
+                imageAttachments: [AppImageAttachment] = [],
+                maxNewTokens: Int = 4_096,
+                maxContextTokens: Int = 4096,
+                temperature: Float = 0.2,
+                topK: Int? = 64,
+                topP: Float? = 0.95,
+                repetitionPenalty: Float = 1.0,
+                runtimeOptions: AppRuntimeOptions = AppRuntimeOptions(),
+                continuesConversation: Bool = false,
+                conversationTokens: Int = 0,
+                conversationEpoch: UUID? = nil,
+                turnIndex: Int? = nil) {
+        self.modelDirectory = modelDirectory
+        self.messages = messages
+        self.imageAttachments = imageAttachments
+        self.maxNewTokens = maxNewTokens
+        self.maxContextTokens = maxContextTokens
+        self.temperature = temperature
+        self.topK = topK
+        self.topP = topP
+        self.repetitionPenalty = repetitionPenalty
+        self.runtimeOptions = runtimeOptions
+        self.continuesConversation = continuesConversation
+        self.conversationTokens = conversationTokens
+        self.conversationEpoch = conversationEpoch
+        self.turnIndex = turnIndex
+    }
+
     public var isPureGreedy: Bool {
         temperature == 0 && repetitionPenalty == 1
     }
 
     public func validate(fileManager: FileManager = .default,
                          requireModelDirectory: Bool = true) throws {
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !imageAttachments.isEmpty else {
+        guard !messages.isEmpty,
+              messages.allSatisfy({
+                  !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || ($0.role == .user && $0 == messages.last && !imageAttachments.isEmpty)
+              }),
+              messages.last?.role == .user else {
             throw AppInferenceError.invalidRequest("Prompt or image cannot be empty.")
+        }
+        if messages.enumerated().contains(where: {
+            $0.element.role == .system && $0.offset != messages.startIndex
+        }) {
+            throw AppInferenceError.invalidRequest("System message must be first.")
+        }
+        if messages.first?.role == .assistant {
+            throw AppInferenceError.invalidRequest(
+                "Conversation cannot begin with an assistant message.")
         }
         // The same context-derived rule the server uses. A fixed four here
         // meant a request the API accepted was refused in the app.

@@ -68,7 +68,7 @@ struct TurboFieldfareMacApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1040, height: 720)
+        .defaultSize(width: 1280, height: 760)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -78,6 +78,11 @@ struct TurboFieldfareMacApp: App {
                             infoDictionary: Bundle.main.infoDictionary,
                             icon: MacAppIcon.load()))
                 }
+            }
+            CommandMenu("Chat") {
+                Button("New Chat") { model.createChat() }
+                    .keyboardShortcut("n", modifiers: .command)
+                    .disabled(model.isRunning)
             }
             CommandMenu("Generation") {
                 Button("Cancel Generation") { model.cancel() }

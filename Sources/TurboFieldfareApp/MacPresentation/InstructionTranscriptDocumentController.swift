@@ -1,6 +1,21 @@
 import AppKit
 import Foundation
 
+public struct InstructionTranscriptMessage: Equatable, Sendable {
+    public enum Role: Equatable, Sendable {
+        case user
+        case assistant
+    }
+
+    public let role: Role
+    public let content: String
+
+    public init(role: Role, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
 @MainActor
 public final class InstructionTranscriptDocumentController {
     public enum Mutation: Equatable {
@@ -99,6 +114,7 @@ public final class InstructionTranscriptDocumentController {
 
     public private(set) var prompt = ""
     public private(set) var promptPrefixIdentifier = ""
+    public private(set) var history: [InstructionTranscriptMessage] = []
     public private(set) var response = ""
     public private(set) var isFinalized = false
     public private(set) var showsPrefillPlaceholder = false
@@ -241,6 +257,19 @@ public final class InstructionTranscriptDocumentController {
         return String(response[start...])
     }
 
+    public static func resolvedResponse(
+        output: String,
+        streamedResponse: String?,
+        isTerminal: Bool
+    ) -> String {
+        guard !isTerminal,
+              let streamedResponse,
+              !streamedResponse.isEmpty else {
+            return output
+        }
+        return streamedResponse
+    }
+
     @discardableResult
     public func synchronize(
         storage: NSMutableAttributedString,
@@ -251,12 +280,37 @@ public final class InstructionTranscriptDocumentController {
         promptPrefix: NSAttributedString = NSAttributedString(),
         promptPrefixIdentifier: String = ""
     ) -> UpdateResult {
+        let history = prompt.isEmpty
+            ? []
+            : [InstructionTranscriptMessage(role: .user, content: prompt)]
+        return synchronize(
+            storage: storage,
+            history: history,
+            response: response,
+            isTerminal: isTerminal,
+            showsPrefillPlaceholder: showsPrefillPlaceholder,
+            promptPrefix: promptPrefix,
+            promptPrefixIdentifier: promptPrefixIdentifier)
+    }
+
+    @discardableResult
+    public func synchronize(
+        storage: NSMutableAttributedString,
+        history: [InstructionTranscriptMessage],
+        response: String,
+        isTerminal: Bool,
+        showsPrefillPlaceholder: Bool = false,
+        promptPrefix: NSAttributedString = NSAttributedString(),
+        promptPrefixIdentifier: String = ""
+    ) -> UpdateResult {
+        let prompt = history.last(where: { $0.role == .user })?.content ?? ""
         let responseChanged = response != self.response
         let displaysPrefillPlaceholder = Self.shouldRunPrefillAnimation(
             response: response,
             isTerminal: isTerminal,
             requested: showsPrefillPlaceholder)
         var needsRebuild = prompt != self.prompt
+            || history != self.history
             || promptPrefixIdentifier != self.promptPrefixIdentifier
             || !Self.extendsExactly(response, self.response)
             || (isFinalized && !isTerminal)
@@ -278,11 +332,11 @@ public final class InstructionTranscriptDocumentController {
         // zero meant the first tick of turn two never drew its prompt.
         if needsRebuild
             || storage.length == frozenLength
-                && (!prompt.isEmpty || promptPrefix.length > 0
+                && (!history.isEmpty || promptPrefix.length > 0
                     || !response.isEmpty || displaysPrefillPlaceholder) {
             rebuild(
                 storage: storage,
-                prompt: prompt,
+                history: history,
                 promptPrefix: promptPrefix,
                 response: response,
                 showsPrefillPlaceholder: displaysPrefillPlaceholder,
@@ -303,6 +357,7 @@ public final class InstructionTranscriptDocumentController {
 
         self.prompt = prompt
         self.promptPrefixIdentifier = promptPrefixIdentifier
+        self.history = history
         self.response = response
         self.showsPrefillPlaceholder = displaysPrefillPlaceholder
 
@@ -366,29 +421,37 @@ public final class InstructionTranscriptDocumentController {
 
     private func rebuild(
         storage: NSMutableAttributedString,
-        prompt: String,
+        history: [InstructionTranscriptMessage],
         promptPrefix: NSAttributedString,
         response: String,
         showsPrefillPlaceholder: Bool,
         closingTail: Bool
     ) {
         let document = NSMutableAttributedString()
-        if !prompt.isEmpty || promptPrefix.length > 0 {
-            document.append(NSAttributedString(
-                string: "You\n",
-                attributes: Self.userLabelAttributes()))
-            if promptPrefix.length > 0 {
-                document.append(promptPrefix)
-                if !prompt.isEmpty {
-                    document.append(NSAttributedString(
-                        string: "\n\n",
-                        attributes: Self.promptAttributes()))
-                }
-            }
-            if !prompt.isEmpty {
+        let lastUserIndex = history.lastIndex { $0.role == .user }
+        for (index, message) in history.enumerated() {
+            switch message.role {
+            case .user:
                 document.append(NSAttributedString(
-                    string: prompt,
+                    string: "You\n",
+                    attributes: Self.userLabelAttributes()))
+                if index == lastUserIndex, promptPrefix.length > 0 {
+                    document.append(promptPrefix)
+                    if !message.content.isEmpty {
+                        document.append(NSAttributedString(
+                            string: "\n\n",
+                            attributes: Self.promptAttributes()))
+                    }
+                }
+                document.append(NSAttributedString(
+                    string: message.content,
                     attributes: Self.promptAttributes()))
+            case .assistant:
+                document.append(NSAttributedString(
+                    string: "Answer\n",
+                    attributes: Self.assistantLabelAttributes()))
+                document.append(renderer.render(
+                    message.content, typesetsMath: true).attributedString)
             }
             document.append(NSAttributedString(
                 string: "\n\n",

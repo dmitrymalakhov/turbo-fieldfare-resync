@@ -48,6 +48,7 @@ public enum AppModelLoadState: Equatable, Sendable {
 
 public enum AppGenerationPhase: String, Equatable, Sendable {
     case idle
+    case compressing
     case prefill
     case decode
 }

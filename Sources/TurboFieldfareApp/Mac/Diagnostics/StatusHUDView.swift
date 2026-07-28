@@ -4,19 +4,30 @@ import SwiftUI
 
 struct StatusHUDView: View {
     let model: AppModel
+    let isChatSidebarVisible: Bool
+    let isInspectorVisible: Bool
+    let toggleChatSidebar: () -> Void
+    let toggleInspector: () -> Void
 
     var body: some View {
         strip
             .padding(.top, 10)
-            .padding(.leading, 84)
+            .padding(.leading, CGFloat(AppChromeLayout.headerLeadingPadding(
+                isChatSidebarVisible: isChatSidebarVisible)))
             .padding(.trailing, 20)
     }
 
     private var strip: some View {
         HStack(spacing: 12) {
+            chatSidebarToggle
+            Divider().frame(height: 16)
             ModelStatusBadge(model: model)
+            selectedChatTitle
             Divider().frame(height: 16)
             PhaseLabel(model: model)
+            if let action = model.presentation.primaryAction {
+                HeaderModelActionButton(model: model, action: action)
+            }
             Spacer(minLength: 12)
             if showsMetrics {
                 HUDMetricView(value: rateText, label: "tok/s", animated: !model.isRunning)
@@ -34,6 +45,7 @@ struct StatusHUDView: View {
                     InfoPopoverButton(subject: "Memory", text: memoryHelp, arrowEdge: .bottom)
                 }
             }
+            inspectorToggle
         }
         .frame(height: 30)
         .padding(.horizontal, 16)
@@ -85,6 +97,65 @@ struct StatusHUDView: View {
             cachedTokens: model.diagnostics?.cachedPromptTokens)
     }
 
+    private var chatSidebarToggle: some View {
+        let presentation = AppSidebarControlPresentation(
+            sidebar: .chats,
+            isVisible: isChatSidebarVisible)
+        return Button(action: toggleChatSidebar) {
+            Label(
+                presentation.title,
+                systemImage: presentation.systemImage)
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(isChatSidebarVisible ? .primary : .secondary)
+        .keyboardShortcut("s", modifiers: [.command, .control])
+        .help(presentation.help)
+        .accessibilityValue(presentation.accessibilityValue)
+    }
+
+    private var selectedChatTitle: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bubble.left")
+                .foregroundStyle(.secondary)
+            Text(model.selectedChat.title)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            if model.selectedChat.contextSummary?.isEmpty == false {
+                Image(systemName: "brain")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help("Older turns are kept in compressed memory")
+            }
+        }
+        .frame(maxWidth: 180)
+        .help(model.selectedChat.title)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Current chat")
+        .accessibilityValue(model.selectedChat.title)
+    }
+
+    private var inspectorToggle: some View {
+        let presentation = AppSidebarControlPresentation(
+            sidebar: .inspector,
+            isVisible: isInspectorVisible)
+        return Button(action: toggleInspector) {
+            Label(
+                presentation.title,
+                systemImage: presentation.systemImage)
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(isInspectorVisible ? .primary : .secondary)
+        .keyboardShortcut("i", modifiers: [.command, .shift])
+        .help(presentation.help)
+        .accessibilityValue(presentation.accessibilityValue)
+    }
+
     private var rateText: String {
         if model.phase == .decode { return MetricFormat.rate(model.liveTokensPerSecond) }
         if let d = model.diagnostics { return MetricFormat.rate(d.tokensPerSecond) }
@@ -108,6 +179,28 @@ struct StatusHUDView: View {
 
     private var showsMetrics: Bool {
         model.loadState.isReady || model.isRunning || model.diagnostics != nil
+    }
+}
+
+private struct HeaderModelActionButton: View {
+    let model: AppModel
+    let action: AppModelAction
+
+    var body: some View {
+        let presentation = AppModelActionPresentation(action: action)
+        Button {
+            model.perform(action)
+        } label: {
+            Label(presentation.title, systemImage: presentation.systemImage)
+                .lineLimit(1)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(presentation.isCancellation
+              ? .orange
+              : TurboFieldfareMacTheme.accentColor)
+        .help(presentation.help)
+        .accessibilityHint(presentation.help)
     }
 }
 
@@ -151,7 +244,10 @@ private struct PhaseLabel: View {
     private var content: Content {
         let presentation = model.presentation
         if presentation.showsActivity { return .loading(presentation.label) }
-        if model.isRunning && model.phase == .prefill { return .pulse(presentation.label) }
+        if model.isRunning
+            && (model.phase == .prefill || model.phase == .compressing) {
+            return .pulse(presentation.label)
+        }
         if model.isRunning && model.phase == .decode { return .steady(presentation.label) }
         return .quiet(presentation.label)
     }

@@ -184,7 +184,8 @@ enum DecodeServiceError: Error, CustomStringConvertible {
                     let carried = await client.conversationTokenCount
                     let continues = isConversationTurn
                     let generation = AppGenerationRequest(
-                        modelDirectory: modelDirectory, prompt: request.prompt,
+                        modelDirectory: modelDirectory,
+                        messages: request.messages.map(appGenerationMessage),
                         imageAttachments: (request.imageAttachments ?? []).map {
                             AppImageAttachment(
                                 id: $0.id,
@@ -286,6 +287,17 @@ enum DecodeServiceError: Error, CustomStringConvertible {
             visionResidencyPolicy: visionResidencyPolicy)
         try resolved.validate()
         return resolved
+    }
+
+    private static func appGenerationMessage(
+        _ message: DecodeGenerationMessage
+    ) -> AppGenerationMessage {
+        let role: AppGenerationMessage.Role = switch message.role {
+        case .system: .system
+        case .user: .user
+        case .assistant: .assistant
+        }
+        return AppGenerationMessage(role: role, content: message.content)
     }
 
     private static func argument(after name: String) -> String? {

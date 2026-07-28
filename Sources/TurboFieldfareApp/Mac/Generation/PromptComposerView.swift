@@ -11,11 +11,23 @@ struct PromptComposerView: View {
     @State private var showingPromptTips = false
     @State private var showingImagePicker = false
     @State private var isImageDropTargeted = false
+    @State private var isImportingDocuments = false
+    @State private var isExtractingDocuments = false
+    @State private var documentImportError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !model.imageAttachments.isEmpty || model.imageAttachmentError != nil {
-                attachmentStrip
+                imageAttachmentStrip
+            }
+            if !model.promptAttachments.isEmpty {
+                documentAttachments
+            }
+            if let documentImportError {
+                Text(documentImportError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             editor
             footer
@@ -39,6 +51,11 @@ struct PromptComposerView: View {
                         .stroke(.separator.opacity(0.5), lineWidth: 0.5)
                 }
         }
+        .fileImporter(
+            isPresented: $isImportingDocuments,
+            allowedContentTypes: DocumentTextExtractor.supportedContentTypes,
+            allowsMultipleSelection: true,
+            onCompletion: handleDocumentSelection)
     }
 
     private var editor: some View {
@@ -111,6 +128,7 @@ struct PromptComposerView: View {
                     ? "Start a new chat to make room for images."
                     : "Add images")
             }
+            attachDocumentAction
             promptTips
             Spacer()
             clearAction
@@ -118,7 +136,7 @@ struct PromptComposerView: View {
         }
     }
 
-    private var attachmentStrip: some View {
+    private var imageAttachmentStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             ScrollView(.horizontal) {
                 // Top-aligned so the tiles share one edge; they are all the
@@ -150,6 +168,73 @@ struct PromptComposerView: View {
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    private var documentAttachments: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(model.promptAttachments) { attachment in
+                    HStack(spacing: 7) {
+                        Image(systemName: "doc.text")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(attachment.fileName)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                            Text(attachmentDetail(attachment))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button {
+                            model.removePromptAttachment(id: attachment.id)
+                        } label: {
+                            Label("Remove \(attachment.fileName)", systemImage: "xmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .disabled(model.isRunning)
+                    }
+                    .padding(.leading, 10)
+                    .padding(.trailing, 7)
+                    .padding(.vertical, 7)
+                    .background(.quaternary.opacity(0.35), in: .capsule)
+                    .overlay {
+                        Capsule().stroke(.separator.opacity(0.4), lineWidth: 0.5)
+                    }
+                    .help(attachment.wasTruncatedDuringExtraction
+                          ? "Text was truncated during local extraction."
+                          : "Text extracted locally for this prompt.")
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var attachDocumentAction: some View {
+        Button {
+            documentImportError = nil
+            isImportingDocuments = true
+        } label: {
+            Group {
+                if isExtractingDocuments {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("Attach documents", systemImage: "paperclip")
+                        .labelStyle(.iconOnly)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .disabled(model.isRunning || isExtractingDocuments)
+        .help("Attach PDF, Word, PowerPoint, or Excel files")
+        .accessibilityLabel(isExtractingDocuments
+                            ? "Extracting document text"
+                            : "Attach documents")
     }
 
     private var promptTips: some View {
@@ -202,13 +287,67 @@ struct PromptComposerView: View {
         }
     }
 
+    private func attachmentDetail(_ attachment: AppPromptAttachment) -> String {
+        let count = attachment.characterCount.formatted(.number.notation(.compactName))
+        let suffix = attachment.wasTruncatedDuringExtraction ? " • truncated" : ""
+        return "\(attachment.formatLabel) • \(count) chars\(suffix)"
+    }
+
+    private func handleDocumentSelection(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            importDocuments(urls)
+        case .failure(let error):
+            documentImportError = error.localizedDescription
+        }
+    }
+
+    private func importDocuments(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        isExtractingDocuments = true
+        documentImportError = nil
+
+        Task {
+            let outcomes = await Task.detached(priority: .userInitiated) {
+                urls.map { url -> DocumentImportOutcome in
+                    do {
+                        return .success(try DocumentTextExtractor.extract(from: url))
+                    } catch {
+                        return .failure(fileName: url.lastPathComponent,
+                                        message: error.localizedDescription)
+                    }
+                }
+            }.value
+
+            var failures: [String] = []
+            for outcome in outcomes {
+                switch outcome {
+                case .success(let document):
+                    model.addPromptAttachment(AppPromptAttachment(
+                        fileName: document.fileName,
+                        formatLabel: document.formatLabel,
+                        extractedText: document.text,
+                        wasTruncatedDuringExtraction: document.wasTruncated))
+                case .failure(let fileName, let message):
+                    failures.append("\(fileName): \(message)")
+                }
+            }
+            documentImportError = failures.isEmpty
+                ? nil
+                : failures.joined(separator: "\n")
+            isExtractingDocuments = false
+        }
+    }
+
     @ViewBuilder
     private var clearAction: some View {
         if !model.isRunning
-            && (!model.promptText.isEmpty || !model.imageAttachments.isEmpty) {
+            && (!model.promptText.isEmpty || !model.imageAttachments.isEmpty
+                || !model.promptAttachments.isEmpty) {
             Button {
                 model.promptText = ""
                 model.clearImages()
+                model.clearPromptAttachments()
                 promptFocused = true
             } label: {
                 Label("Clear input", systemImage: "xmark.circle.fill")
@@ -218,18 +357,18 @@ struct PromptComposerView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
-            .help("Clear text and images")
+            .help("Clear text and attachments")
         } else if !model.isRunning && model.hasOutputTranscript {
             Button {
-                model.newChat()
+                model.clearOutput()
             } label: {
-                Label("New chat", systemImage: "trash")
+                Label("Clear chat history", systemImage: "trash")
                     .labelStyle(.iconOnly)
                     .frame(width: 28, height: 28)
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
-            .help("Start a new chat")
+            .help("Clear chat history")
         }
     }
 }
@@ -580,4 +719,9 @@ private final class ReceivedPromises: @unchecked Sendable {
         completed += 1
         return completed == expected ? urls : nil
     }
+}
+
+private enum DocumentImportOutcome: Sendable {
+    case success(ExtractedPromptDocument)
+    case failure(fileName: String, message: String)
 }
