@@ -137,6 +137,9 @@ public struct AppPresentationState: Equatable, Sendable {
                 return Self(label: "Stopping", severity: .active, showsActivity: true)
             }
             switch snapshot.generationPhase {
+            case .compressing:
+                return Self(label: "Compressing history", severity: .active,
+                            showsActivity: true)
             case .prefill:
                 let label = snapshot.livePrefillTotal > 0
                     ? "Prefill (\(snapshot.livePrefillDone)/\(snapshot.livePrefillTotal))"
