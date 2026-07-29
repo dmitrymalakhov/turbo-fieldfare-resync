@@ -32,6 +32,8 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
 struct TurboFieldfareMacApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: ForegroundAppDelegate
     @State private var model: AppModel
+    @AppStorage(AppAppearance.storageKey)
+    private var appearanceRawValue = AppAppearance.system.rawValue
 
     init() {
         let model = AppModel(
@@ -66,6 +68,9 @@ struct TurboFieldfareMacApp: App {
                         + "Getting image support back means downloading the "
                         + "pack again.")
                 }
+                .preferredColorScheme(
+                    AppAppearance.resolve(appearanceRawValue)
+                        .preferredColorScheme)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 760)
@@ -122,6 +127,14 @@ struct TurboFieldfareMacApp: App {
                 Picker("Load Model At Launch", selection: loadModelOnLaunchBinding) {
                     Text("Off").tag(false)
                     Text("On").tag(true)
+                }
+            }
+            CommandMenu("Appearance") {
+                Picker("Appearance", selection: $appearanceRawValue) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Label(appearance.label, systemImage: appearance.systemImage)
+                            .tag(appearance.rawValue)
+                    }
                 }
             }
         }
