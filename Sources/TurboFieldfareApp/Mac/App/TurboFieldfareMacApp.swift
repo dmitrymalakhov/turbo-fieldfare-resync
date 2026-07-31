@@ -97,6 +97,10 @@ struct TurboFieldfareMacApp: App {
                     .disabled(!model.canCancelInstall)
             }
             CommandMenu("Model") {
+                Button("Choose Model Folder…") {
+                    ModelLocationPicker.choose(for: model)
+                }
+                .disabled(model.isRunning || model.isInstallingModel || model.loadState.isLoading)
                 Button("Load Model", action: model.loadModel)
                     .disabled(!model.canLoadModel)
                 Button("Reload Model", action: model.reloadModel)
