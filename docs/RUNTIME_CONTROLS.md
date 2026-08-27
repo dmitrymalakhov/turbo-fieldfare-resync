@@ -1,19 +1,29 @@
 # Runtime controls
 
 The Mac app, CLI, and local server expose generation and runtime controls. The
-app keeps them in its collapsible right
-settings pane. Use the right-sidebar button in the status bar or
-<kbd>Shift</kbd>+<kbd>Command</kbd>+<kbd>I</kbd> to hide or restore it. FP16 is
-the fixed KV format. Generation settings apply to the next request; load-time
-app settings require a reload.
+app keeps them in its collapsible right settings pane, which starts hidden to
+leave more room for the conversation. Use the right-sidebar button in the
+status bar or <kbd>Shift</kbd>+<kbd>Command</kbd>+<kbd>I</kbd> to show or hide it.
+FP16 is the fixed KV format. Generation settings apply to the next request;
+load-time app settings require a reload.
 
 Chat navigation lives separately in the collapsible left sidebar. Use its
 **New chat** button or <kbd>Command</kbd>+<kbd>N</kbd> to create an independent
 context. The left-sidebar buttons or
 <kbd>Control</kbd>+<kbd>Command</kbd>+<kbd>S</kbd> toggle the chat list without
-changing the right settings pane.
+changing the right settings pane. The **Chats / Scheduled** selector turns saved
+conversations into a task queue with status and optional due dates. Task
+metadata is stored with the chat; it does not affect generation context or
+automatically run the local model. In **Scheduled**, **New task** creates a
+dedicated chat, quick date choices set common deadlines, and the leading circle
+completes or reopens a task directly from the list.
 
 ## Generation controls
+
+The app's main control is a response-style preset: **Precise**, **Balanced**,
+or **Creative**. A preset selects temperature, Top-K, and Top-P together.
+Changing any of those values under **Advanced controls** marks the style as
+**Custom**. This keeps the common choice simple without removing exact control.
 
 The Mac app and CLI expose these generation controls:
 
@@ -47,16 +57,20 @@ model, so an unsupported combination fails immediately with the usage text.
 
 In the app, changing context length, expert-cache slots, or RDADVISE requires a
 reload. Some sampling changes also require a reload because greedy and sampled
-generation use different output-head paths. Prompt-prefill settings apply to
-each request and do not require a reload. Each CLI invocation loads a new model
-process, so its selected runtime settings apply immediately. The server fixes
-its runtime settings at startup, so changing one means restarting the process.
+generation use different output-head paths. The inspector summarizes pending
+load-time changes and offers **Apply & Reload** or **Revert**. Prompt-prefill
+settings apply to each request and do not require a reload. Each CLI invocation
+loads a new model process, so its selected runtime settings apply immediately.
+The server fixes its runtime settings at startup, so changing one means
+restarting the process.
 
 Multi-turn chat history is fitted with the model tokenizer before generation.
 When older complete turns no longer fit, the app runs a bounded local
 compression pass and replaces those turns in model context with a rolling
 summary. The full transcript stays available in the UI, and each chat keeps a
-separate summary. The current user turn is never silently discarded.
+separate summary. The context indicator near the composer estimates the fitted
+prompt while you type and switches to an exact tokenizer count after a short
+pause. The current user turn is never silently discarded.
 
 ## Run an experiment
 

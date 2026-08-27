@@ -173,8 +173,22 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         let path = head.uri.split(separator: "?", maxSplits: 1,
                                   omittingEmptySubsequences: false).first.map(String.init) ?? head.uri
         switch (head.method, path) {
+        case (.GET, "/"):
+            writeJSON(context, status: .ok, object: [
+                "name": "TurboFieldfareServer",
+                "model": modelID,
+                "status": "ready",
+                "endpoints": [
+                    "health": "/health",
+                    "models": "/v1/models",
+                    "chat_completions": "/v1/chat/completions",
+                ],
+            ])
         case (.GET, "/health"):
-            writeJSON(context, status: .ok, object: ["status": "ok"])
+            writeJSON(context, status: .ok, object: [
+                "status": "ok",
+                "model": modelID,
+            ])
         case (.GET, "/v1/models"):
             let response = OpenAIModelList(
                 object: "list",
@@ -192,7 +206,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
-        case (_, "/health"), (_, "/v1/models"), (_, "/v1/chat/completions"):
+        case (_, "/"), (_, "/health"), (_, "/v1/models"),
+             (_, "/v1/chat/completions"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
@@ -520,7 +535,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func writeJSON(_ context: ChannelHandlerContext,
                            status: HTTPResponseStatus,
                            object: Any) {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: object,
+            options: [.withoutEscapingSlashes]) else { return }
         writeData(context, status: status, data: data)
     }
 

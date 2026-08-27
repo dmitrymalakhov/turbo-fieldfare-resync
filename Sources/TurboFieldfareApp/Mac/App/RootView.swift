@@ -9,7 +9,7 @@ struct RootView: View {
     @AppStorage("TurboFieldfare.chatSidebarVisible")
     private var isChatSidebarVisible = true
     @AppStorage("TurboFieldfare.inspectorVisible")
-    private var isInspectorVisible = true
+    private var isInspectorVisible = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -130,6 +130,23 @@ struct RootView: View {
     private var conversationChrome: some View {
         VStack(spacing: 10) {
             ErrorBanner(model: model)
+            if model.canUndoClearHistory {
+                HStack(spacing: 8) {
+                    Label("Chat history cleared", systemImage: "trash")
+                        .font(.callout)
+                    Spacer()
+                    Button("Undo", action: model.undoClearHistory)
+                        .buttonStyle(.borderless)
+                    Button(action: model.dismissClearHistoryUndo) {
+                        Label("Dismiss", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.quaternary.opacity(0.3), in: .capsule)
+            }
             if model.showsPromptExamples {
                 PromptExamplesView { preset in
                     model.promptText = preset.prompt

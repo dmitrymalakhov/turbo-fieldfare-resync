@@ -7,6 +7,7 @@ import TurboFieldfare
         let arguments = try Args.parse(["--model", "m.gturbo", "--prompt", "hi"])
         #expect(arguments.model == "m.gturbo")
         #expect(arguments.prompt == "hi")
+        #expect(arguments.chatPrompt == nil)
         #expect(arguments.messagesFile == nil)
         #expect(arguments.maxNew == 1_024)
         #expect(arguments.maxContext == 4096)
@@ -17,6 +18,8 @@ import TurboFieldfare
         #expect(arguments.seed == nil)
         #expect(arguments.stops.isEmpty)
         #expect(!arguments.quiet)
+        #expect(!arguments.progress)
+        #expect(!arguments.metricsJSON)
 
         let runtime = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         #expect(runtime == RuntimeConfiguration.production)
@@ -66,11 +69,11 @@ import TurboFieldfare
 
     @Test func helpListsExactlyThePublicOptions() {
         let expected: Set<String> = [
-            "--model", "--prompt", "--messages-file", "--max-new", "--max-context",
+            "--model", "--chat", "--prompt", "--messages-file", "--max-new", "--max-context",
             "--temperature", "--top-k", "--top-p", "--repetition-penalty",
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
-            "--rdadvise", "--help",
+            "--rdadvise", "--progress", "--metrics-json", "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         let options = Set(words.map(String.init).filter { $0.hasPrefix("--") })
@@ -190,20 +193,44 @@ import TurboFieldfare
     }
 
     @Test func unsupportedSelectorsAreRejected() {
-        for flag in ["--runtime-profile", "--experiment-id", "-h"] {
+        for flag in ["--runtime-profile", "--experiment-id"] {
             #expect(throws: ArgsError.unknownFlag(flag)) {
                 _ = try Args.parse(["--model", "m.gturbo", "--prompt", "hi", flag])
             }
         }
     }
 
-    @Test func modelAndPromptAreRequired() {
-        #expect(throws: ArgsError.requiredMissing("--model")) {
-            _ = try Args.parse(["--prompt", "hi"])
-        }
+    @Test func defaultModelAndInputRequirementAreUserFriendly() throws {
+        let arguments = try Args.parse(["--chat", "hi"])
+        #expect(arguments.model == "scratch/gemma4.gturbo")
+        #expect(arguments.chatPrompt == "hi")
         #expect(throws: ArgsError.modeMissing) {
-            _ = try Args.parse(["--model", "m.gturbo"])
+            _ = try Args.parse([])
         }
+    }
+
+    @Test func helpAcceptsShortAlias() {
+        #expect(throws: ArgsError.helpRequested) {
+            _ = try Args.parse(["-h"])
+        }
+    }
+
+    @Test func progressAndJSONMetricsAreOptIn() throws {
+        let arguments = try Args.parse([
+            "--chat", "hi", "--progress", "--metrics-json",
+        ])
+        #expect(arguments.progress)
+        #expect(arguments.metricsJSON)
+    }
+
+    @Test func positionalChatAndRunCommandsRemainConcise() throws {
+        let chat = try Args.parse(["chat", "Explain Metal heaps"])
+        #expect(chat.chatPrompt == "Explain Metal heaps")
+        #expect(chat.prompt == nil)
+
+        let raw = try Args.parse(["run", "The capital of France is"])
+        #expect(raw.prompt == "The capital of France is")
+        #expect(raw.chatPrompt == nil)
     }
 
     @Test func messagesFileSelectsChatMode() throws {
@@ -219,6 +246,14 @@ import TurboFieldfare
             _ = try Args.parse([
                 "--model", "m.gturbo", "--prompt", "hi",
                 "--messages-file", "chat.json",
+            ])
+        }
+    }
+
+    @Test func chatInputIsMutuallyExclusiveWithOtherModes() {
+        #expect(throws: ArgsError.self) {
+            _ = try Args.parse([
+                "--chat", "hi", "--prompt", "raw",
             ])
         }
     }

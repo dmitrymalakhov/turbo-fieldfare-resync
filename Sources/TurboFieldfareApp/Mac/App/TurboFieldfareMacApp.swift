@@ -56,7 +56,14 @@ struct TurboFieldfareMacApp: App {
             CommandMenu("Chat") {
                 Button("New Chat") { model.createChat() }
                     .keyboardShortcut("n", modifiers: .command)
-                    .disabled(model.isRunning)
+                    .disabled(!model.canNavigateChats)
+                Divider()
+                Button(model.selectedChat.isPinned
+                       ? "Unpin Current Chat"
+                       : "Pin Current Chat") {
+                    model.toggleChatPinned(id: model.selectedChatID)
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandMenu("Generation") {
                 Button("Cancel Generation") { model.cancel() }

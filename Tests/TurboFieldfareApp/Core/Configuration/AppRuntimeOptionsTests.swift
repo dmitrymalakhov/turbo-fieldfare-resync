@@ -98,4 +98,31 @@ import TurboFieldfare
             maxContextTokens: 4096,
             options: value) == baseline)
     }
+
+    @Test func responseStylesResolveStableUserFacingPresets() {
+        #expect(AppResponseStyle.resolve(
+            temperature: 0,
+            topKEnabled: false,
+            topK: 64,
+            topPEnabled: false,
+            topP: 0.95) == .precise)
+        #expect(AppResponseStyle.resolve(
+            temperature: 0.2,
+            topKEnabled: true,
+            topK: 64,
+            topPEnabled: true,
+            topP: 0.95) == .balanced)
+        #expect(AppResponseStyle.resolve(
+            temperature: 0.8,
+            topKEnabled: true,
+            topK: 64,
+            topPEnabled: true,
+            topP: 0.95) == .creative)
+        #expect(AppResponseStyle.resolve(
+            temperature: 0.35,
+            topKEnabled: true,
+            topK: 32,
+            topPEnabled: true,
+            topP: 0.9) == .custom)
+    }
 }

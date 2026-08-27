@@ -113,6 +113,7 @@ import Testing
             wasTruncatedDuringExtraction: true)
 
         #expect(attachment.characterCount == 3)
+        #expect(attachment.approximateTokenCount == 1)
         let decoded = try JSONDecoder().decode(
             AppPromptAttachment.self,
             from: JSONEncoder().encode(attachment))

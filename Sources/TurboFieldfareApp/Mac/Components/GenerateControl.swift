@@ -9,6 +9,8 @@ struct GenerateControl: View {
     var body: some View {
         if model.isRunning {
             runningPill
+        } else if model.isPreparingSubmission {
+            preparingPill
         } else {
             generateButton
         }
@@ -16,9 +18,9 @@ struct GenerateControl: View {
 
     private var generateButton: some View {
         Button {
-            model.run()
+            model.submitPrompt()
         } label: {
-            Label("Generate", systemImage: "arrow.up")
+            Label(submitTitle, systemImage: "arrow.up")
                 .font(.callout.weight(.semibold))
                 .padding(.horizontal, 24)
                 .frame(minWidth: 124, minHeight: controlHeight)
@@ -31,8 +33,28 @@ struct GenerateControl: View {
             Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5)
         }
         .keyboardShortcut(.return, modifiers: .command)
-        .disabled(!model.canRun)
-        .opacity(model.canRun ? 1 : 0.62)
+        .disabled(!model.canSubmitPrompt)
+        .opacity(model.canSubmitPrompt ? 1 : 0.62)
+    }
+
+    private var submitTitle: String {
+        if model.canRun { return "Send" }
+        if model.canReloadModel { return "Apply & Send" }
+        if model.canLoadModel { return "Load & Send" }
+        return "Send"
+    }
+
+    private var preparingPill: some View {
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            Text("Loading…")
+                .font(.callout.weight(.medium))
+        }
+        .padding(.horizontal, 18)
+        .frame(minWidth: 124, minHeight: controlHeight)
+        .foregroundStyle(.secondary)
+        .background(.quaternary.opacity(0.35), in: .capsule)
+        .accessibilityLabel("Loading the model before sending")
     }
 
     private var runningPill: some View {

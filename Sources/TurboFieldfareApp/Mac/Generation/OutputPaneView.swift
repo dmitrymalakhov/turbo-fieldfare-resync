@@ -2,15 +2,21 @@ import AppKit
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct OutputPaneView: View {
     let model: AppModel
     @State private var responseCopyFeedbackID: UUID?
+    @State private var messageBeingEdited: AppChatMessage?
+    @State private var showingClearConfirmation = false
+    @State private var showingConversationMemory = false
 
     var body: some View {
         Group {
             if model.hasOutputTranscript {
                 transcript
+            } else if model.selectedChat.branchedFromChatID != nil {
+                branchedPlaceholder
             } else {
                 placeholder
             }
@@ -23,16 +29,52 @@ struct OutputPaneView: View {
                 responseCopyFeedbackID = nil
             }
         }
+        .sheet(item: $messageBeingEdited) { message in
+            EditChatMessageSheet(message: message) { replacement in
+                model.branchChat(
+                    from: model.selectedChatID,
+                    editingMessage: message.id,
+                    replacementContent: replacement)
+            }
+        }
+        .sheet(isPresented: $showingConversationMemory) {
+            ConversationMemorySheet(
+                memory: model.selectedChat.contextSummary ?? "")
+        }
+        .confirmationDialog(
+            "Clear this chat's history?",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                model.clearOutput()
+            }
+            Button("Keep History", role: .cancel) {}
+        } message: {
+            Text("Messages and compressed memory will be removed. You can undo this immediately afterward.")
+        }
         .contextMenu {
+            if !model.selectedChat.messages.isEmpty {
+                Button("Branch chat") {
+                    model.branchChat(from: model.selectedChatID)
+                }
+                .disabled(!model.canEditSelectedChat)
+
+                branchFromMessageMenu
+                editMessageMenu
+
+                Divider()
+            }
+
             Button("Copy response") {
                 copyResponse()
             }
             .disabled(model.outputResponsePlainText.isEmpty)
 
             Button("Copy prompt") {
-                copy(model.outputPromptText)
+                copy(model.displayedOutputPromptText)
             }
-            .disabled(model.outputPromptText.isEmpty)
+            .disabled(model.displayedOutputPromptText.isEmpty)
 
             Button("Copy conversation") {
                 copy(model.outputConversationPlainText)
@@ -41,8 +83,11 @@ struct OutputPaneView: View {
 
             Divider()
 
-            Button("Clear chat history") { model.clearOutput() }
-                .disabled(model.isRunning || !model.hasOutputTranscript)
+            Button("Export Conversation…", action: exportConversation)
+                .disabled(model.outputConversationPlainText.isEmpty)
+
+            Button("Clear chat history") { showingClearConfirmation = true }
+                .disabled(!model.canEditSelectedChat || !model.hasOutputTranscript)
         }
     }
 
@@ -58,28 +103,244 @@ struct OutputPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var branchedPlaceholder: some View {
+        VStack(spacing: 0) {
+            branchSourceBanner
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+            placeholder
+        }
+    }
+
     private var transcript: some View {
-        IncrementalTranscriptView(
-            messages: model.transcriptBaseMessages.map { message in
-                InstructionTranscriptMessage(
-                    role: message.role == .user ? .user : .assistant,
-                    content: message.content)
-            },
-            output: model.outputText,
-            mailbox: model.generationTranscriptMailbox,
-            isTerminal: !model.isRunning,
-            showsPrefillPlaceholder: model.isRunning
-                && model.outputResponsePlainText.isEmpty)
-            .id(model.selectedChatID)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if !model.isRunning && !model.outputResponsePlainText.isEmpty {
-                    copyResponseButton
-                        .padding(8)
+        VStack(spacing: 10) {
+            if model.selectedChat.branchedFromChatID != nil {
+                branchSourceBanner
+            }
+            if model.isSelectedChatRunning {
+                IncrementalTranscriptView(
+                    messages: model.transcriptBaseMessages.map { message in
+                        InstructionTranscriptMessage(
+                            role: message.role == .user ? .user : .assistant,
+                            content: message.content,
+                            isEdited: isEditedAssistantMessage(message))
+                    },
+                    output: model.outputText,
+                    mailbox: model.generationTranscriptMailbox,
+                    isTerminal: false,
+                    showsPrefillPlaceholder: model.outputResponsePlainText.isEmpty,
+                    isOutputEdited: false)
+                    .id(model.selectedChatID)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ConversationTranscriptView(
+                    messages: model.transcriptBaseMessages,
+                    response: model.outputResponsePlainText,
+                    responseMessage: model.displayedResponseMessage,
+                    summaryBoundaryID: model.selectedChat.summarizedThroughMessageID,
+                    canEdit: model.canEditSelectedChat,
+                    isEdited: isEditedAssistantMessage,
+                    copy: copy,
+                    edit: { messageBeingEdited = $0 },
+                    branch: { message in
+                        model.branchChat(
+                            from: model.selectedChatID,
+                            throughMessage: message.id)
+                    },
+                    regenerate: { message in
+                        model.regenerateAssistantMessage(
+                            in: model.selectedChatID,
+                            messageID: message.id)
+                    },
+                    showMemory: { showingConversationMemory = true })
+                    .id(model.selectedChatID)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+    }
+
+    @ViewBuilder
+    private var branchSourceBanner: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(TurboFieldfareMacTheme.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                if let source = model.branchSourceChat(
+                    for: model.selectedChatID) {
+                    Text(branchSourceTitle(source: source))
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    if let point = model.branchSourceMessage(
+                        for: model.selectedChatID) {
+                        Text(branchPointText(point))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("Source chat is no longer available")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+            Spacer(minLength: 8)
+            if model.branchSourceChat(for: model.selectedChatID) != nil {
+                Button("Go to source") {
+                    model.selectBranchSource(of: model.selectedChatID)
+                }
+                .buttonStyle(.borderless)
+                .disabled(!model.canNavigateChats)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 42)
+        .background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator.opacity(0.4), lineWidth: 0.5)
+        }
+    }
+
+    private var transcriptActions: some View {
+        HStack(spacing: 6) {
+            editMessageButton
+            branchChatButton
+            if !model.outputResponsePlainText.isEmpty {
+                copyResponseButton
+            }
+        }
+    }
+
+    private var editMessageButton: some View {
+        Menu {
+            editMessageButtons
+        } label: {
+            Image(systemName: "pencil")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .background(.regularMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Edit a message and branch from it")
+        .accessibilityLabel("Edit message")
+    }
+
+    private var branchChatButton: some View {
+        Menu {
+            Button("Branch entire chat") {
+                model.branchChat(from: model.selectedChatID)
+            }
+            Divider()
+            branchFromMessageButtons
+        } label: {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .background(.regularMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Branch this chat or continue from a specific message")
+        .accessibilityLabel("Branch chat")
+    }
+
+    private var branchFromMessageMenu: some View {
+        Menu("Branch from message") {
+            branchFromMessageButtons
+        }
+        .disabled(!model.canEditSelectedChat)
+    }
+
+    @ViewBuilder
+    private var branchFromMessageButtons: some View {
+        ForEach(Array(model.selectedChat.messages.enumerated()), id: \.element.id) {
+            index, message in
+            Button {
+                model.branchChat(
+                    from: model.selectedChatID,
+                    throughMessage: message.id)
+            } label: {
+                Text(messageMenuLabel(message, index: index))
+            }
+        }
+    }
+
+    private var editMessageMenu: some View {
+        Menu("Edit message") {
+            editMessageButtons
+        }
+        .disabled(!model.canEditSelectedChat)
+    }
+
+    @ViewBuilder
+    private var editMessageButtons: some View {
+        ForEach(Array(model.selectedChat.messages.enumerated()), id: \.element.id) {
+            index, message in
+            Button {
+                messageBeingEdited = message
+            } label: {
+                Text(messageMenuLabel(message, index: index))
+            }
+        }
+    }
+
+    private func messageMenuLabel(
+        _ message: AppChatMessage,
+        index: Int
+    ) -> String {
+        let role = message.role == .user ? "You" : "Answer"
+        let oneLine = message.content
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = oneLine.isEmpty ? "Empty message" : String(oneLine.prefix(48))
+        return "\(index + 1). \(role): \(preview)"
+    }
+
+    private func branchSourceTitle(source: AppChat) -> String {
+        switch model.selectedChat.branchKind {
+        case .editedUserMessage:
+            return "Edited from \(source.title)"
+        case .editedAssistantMessage:
+            return "Edited answer from \(source.title)"
+        case .chatCopy, .messageContinuation, .none:
+            return "Branched from \(source.title)"
+        }
+    }
+
+    private func branchPointText(_ message: AppChatMessage) -> String {
+        let role = message.role == .user ? "You" : "Answer"
+        let oneLine = message.content
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(role): \(String(oneLine.prefix(100)))"
+    }
+
+    private func isEditedAssistantMessage(_ message: AppChatMessage) -> Bool {
+        model.selectedChat.editedAssistantMessageIDs?.contains(message.id) == true
+    }
+
+    private var isDisplayedOutputEdited: Bool {
+        guard !model.isRunning,
+              let lastMessage = model.selectedChat.messages.last,
+              lastMessage.role == .assistant else {
+            return false
+        }
+        return isEditedAssistantMessage(lastMessage)
     }
 
     private var copyResponseButton: some View {
@@ -185,6 +446,312 @@ struct OutputPaneView: View {
             responseCopyFeedbackID = UUID()
         }
     }
+
+    private func exportConversation() {
+        let panel = NSSavePanel()
+        panel.title = "Export Conversation"
+        panel.nameFieldStringValue = model.selectedChat.title + ".md"
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let markdown = model.outputConversationPlainText
+        do {
+            try Data(markdown.utf8).write(to: url, options: .atomic)
+        } catch {
+            model.error = .unknown("Conversation could not be exported: \(error)")
+        }
+    }
+}
+
+private struct EditChatMessageSheet: View {
+    let message: AppChatMessage
+    let onCommit: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var replacement: String
+
+    init(
+        message: AppChatMessage,
+        onCommit: @escaping (String) -> Void
+    ) {
+        self.message = message
+        self.onCommit = onCommit
+        _replacement = State(initialValue: message.content)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(message.role == .user ? "Edit your message" : "Edit answer")
+                .font(.title3.weight(.semibold))
+            Text("A new branch will keep the context before this message. Later turns will remain in the original chat.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if message.role == .user,
+               message.contextContent != message.content {
+                Label(
+                    "The attached document context will be kept unless you change the draft again before sending.",
+                    systemImage: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            TextEditor(text: $replacement)
+                .font(.body)
+                .frame(minHeight: 150)
+                .padding(6)
+                .background(
+                    Color(nsColor: .textBackgroundColor),
+                    in: .rect(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.separator.opacity(0.6), lineWidth: 0.5)
+                }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+                Button("Create branch") {
+                    onCommit(replacement)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(replacement.trimmingCharacters(
+                    in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+private struct ConversationTranscriptView: View {
+    let messages: [AppChatMessage]
+    let response: String
+    let responseMessage: AppChatMessage?
+    let summaryBoundaryID: AppChatMessage.ID?
+    let canEdit: Bool
+    let isEdited: (AppChatMessage) -> Bool
+    let copy: (String) -> Void
+    let edit: (AppChatMessage) -> Void
+    let branch: (AppChatMessage) -> Void
+    let regenerate: (AppChatMessage) -> Void
+    let showMemory: () -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                ForEach(messages) { message in
+                    TranscriptMessageRow(
+                        message: message,
+                        content: message.content,
+                        canEdit: canEdit,
+                        isEdited: isEdited(message),
+                        copy: copy,
+                        edit: edit,
+                        branch: branch,
+                        regenerate: regenerate)
+                    if summaryBoundaryID == message.id {
+                        ContextMemoryNotice(showMemory: showMemory)
+                    }
+                }
+                if !response.isEmpty {
+                    if let responseMessage {
+                        TranscriptMessageRow(
+                            message: responseMessage,
+                            content: response,
+                            canEdit: canEdit,
+                            isEdited: isEdited(responseMessage),
+                            copy: copy,
+                            edit: edit,
+                            branch: branch,
+                            regenerate: regenerate)
+                        if summaryBoundaryID == responseMessage.id {
+                            ContextMemoryNotice(showMemory: showMemory)
+                        }
+                    } else {
+                        TranscriptResponseRow(content: response)
+                    }
+                }
+            }
+            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 4)
+        }
+        .textSelection(.enabled)
+    }
+}
+
+private struct TranscriptMessageRow: View {
+    let message: AppChatMessage
+    let content: String
+    let canEdit: Bool
+    let isEdited: Bool
+    let copy: (String) -> Void
+    let edit: (AppChatMessage) -> Void
+    let branch: (AppChatMessage) -> Void
+    let regenerate: (AppChatMessage) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(roleLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(message.role == .user
+                                     ? Color.secondary
+                                     : Color.accentColor)
+                if isEdited {
+                    Text("Edited")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary.opacity(0.4), in: .capsule)
+                }
+                Spacer()
+                messageActions
+                    .opacity(isHovered ? 1 : 0.18)
+            }
+            messageContent
+        }
+        .padding(message.role == .user ? 14 : 4)
+        .background(
+            message.role == .user
+                ? Color(nsColor: .controlBackgroundColor)
+                : Color.clear,
+            in: .rect(cornerRadius: 14))
+        .overlay {
+            if message.role == .user {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(.separator.opacity(0.35), lineWidth: 0.5)
+            }
+        }
+        .onHover { isHovered = $0 }
+    }
+
+    @ViewBuilder
+    private var messageContent: some View {
+        if message.role == .assistant,
+           let attributed = try? AttributedString(
+               ResponseMarkdownRenderer().render(content).attributedString,
+               including: \.appKit) {
+            Text(attributed)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var messageActions: some View {
+        HStack(spacing: 2) {
+            Button {
+                copy(content)
+            } label: {
+                Label("Copy message", systemImage: "doc.on.doc")
+                    .labelStyle(.iconOnly)
+            }
+            .help("Copy message")
+            if canEdit {
+                Button {
+                    edit(message)
+                } label: {
+                    Label("Edit and branch", systemImage: "pencil")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Edit this message and create a branch")
+                Button {
+                    branch(message)
+                } label: {
+                    Label("Continue from here", systemImage: "arrow.triangle.branch")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Continue from this message in a new branch")
+                if message.role == .assistant {
+                    Button {
+                        regenerate(message)
+                    } label: {
+                        Label("Regenerate", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help("Regenerate this answer in a new branch")
+                }
+            }
+        }
+        .buttonStyle(.borderless)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var roleLabel: String {
+        message.role == .user ? "You" : "Answer"
+    }
+}
+
+private struct TranscriptResponseRow: View {
+    let content: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Answer")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct ContextMemoryNotice: View {
+    let showMemory: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "brain")
+            Text("Earlier messages are represented by compressed memory")
+            Spacer()
+            Button("View Memory", action: showMemory)
+                .buttonStyle(.borderless)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 9))
+    }
+}
+
+private struct ConversationMemorySheet: View {
+    let memory: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Compressed Conversation Memory")
+                        .font(.title3.weight(.semibold))
+                    Text("This is what the model receives instead of older full turns.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            ScrollView {
+                Text(memory)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 10))
+        }
+        .padding(20)
+        .frame(minWidth: 620, minHeight: 420)
+    }
 }
 
 private struct EmptyPlaceholderIcon: View {
@@ -266,6 +833,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
     var mailbox: GenerationTranscriptMailbox?
     var isTerminal: Bool
     var showsPrefillPlaceholder: Bool
+    var isOutputEdited = false
 
     @MainActor
     final class Coordinator: NSObject {
@@ -275,6 +843,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         var messages: [InstructionTranscriptMessage] = []
         var isTerminal = false
         var showsPrefillPlaceholder = false
+        var isOutputEdited = false
         var timer: Timer?
         var prefillAnimationTimer: Timer?
         let documentController = InstructionTranscriptDocumentController()
@@ -296,13 +865,15 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             output: String,
             mailbox: GenerationTranscriptMailbox?,
             isTerminal: Bool,
-            showsPrefillPlaceholder: Bool
+            showsPrefillPlaceholder: Bool,
+            isOutputEdited: Bool
         ) {
             let activeMailbox = isTerminal ? nil : mailbox
             self.mailbox = activeMailbox
             self.messages = messages
             self.isTerminal = isTerminal
             self.showsPrefillPlaceholder = showsPrefillPlaceholder
+            self.isOutputEdited = isOutputEdited
             let response = InstructionTranscriptDocumentController
                 .resolvedResponse(
                     output: output,
@@ -312,7 +883,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                 messages: messages,
                 response: response,
                 isTerminal: isTerminal,
-                showsPrefillPlaceholder: showsPrefillPlaceholder)
+                showsPrefillPlaceholder: showsPrefillPlaceholder,
+                isOutputEdited: isOutputEdited)
         }
 
         @objc private func drainMailbox() {
@@ -325,7 +897,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             apply(messages: messages,
                   response: snapshot.completeText,
                   isTerminal: isTerminal,
-                  showsPrefillPlaceholder: showsPrefillPlaceholder)
+                  showsPrefillPlaceholder: showsPrefillPlaceholder,
+                  isOutputEdited: isOutputEdited)
         }
 
         @objc private func animatePrefillPlaceholderIfNeeded() {
@@ -385,7 +958,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             messages: [InstructionTranscriptMessage],
             response: String,
             isTerminal: Bool,
-            showsPrefillPlaceholder: Bool
+            showsPrefillPlaceholder: Bool,
+            isOutputEdited: Bool
         ) {
             guard let scrollView, let textView, let storage = textView.textStorage else { return }
             let wasAtBottom = isAtBottom(scrollView)
@@ -397,7 +971,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                 history: messages,
                 response: response,
                 isTerminal: isTerminal,
-                showsPrefillPlaceholder: showsPrefillPlaceholder)
+                showsPrefillPlaceholder: showsPrefillPlaceholder,
+                isResponseEdited: isOutputEdited)
             storage.endEditing()
             updatePrefillAnimationTimer()
 
@@ -462,7 +1037,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             output: output,
             mailbox: mailbox,
             isTerminal: isTerminal,
-            showsPrefillPlaceholder: showsPrefillPlaceholder)
+            showsPrefillPlaceholder: showsPrefillPlaceholder,
+            isOutputEdited: isOutputEdited)
     }
 
     static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {

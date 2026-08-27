@@ -46,11 +46,20 @@ struct ModelInstallView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            Text("The model stays on this Mac. Interrupted downloads can be resumed.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
         }
     }
 
     private var storageCard: some View {
         VStack(spacing: 12) {
+            StorageRow(label: "Download",
+                       value: MetricFormat.storage(
+                           model.installDescriptor.approximateDownloadBytes))
+            StorageRow(label: "Installed size",
+                       value: MetricFormat.storage(model.installDescriptor.installedBytes))
             if let requirement = model.installRequirement {
                 StorageRow(label: "Space required",
                            value: MetricFormat.storage(requirement.requiredBytes))
@@ -179,9 +188,11 @@ struct ModelInstallView: View {
                     .disabled(!model.canDiscardModelDownload)
                 }
 
-                Button("Check Again", action: model.recheckModelAtCurrentLocation)
-                .buttonStyle(.bordered)
-                .disabled(model.isInstallingModel)
+                if showsCheckAgain {
+                    Button("Check Again", action: model.recheckModelAtCurrentLocation)
+                        .buttonStyle(.bordered)
+                        .disabled(model.isInstallingModel)
+                }
 
                 Button(model.hasPartialModelDownload ? "Resume" : "Download",
                        action: model.installModel)
@@ -190,6 +201,15 @@ struct ModelInstallView: View {
             }
         }
         .controlSize(.large)
+    }
+
+    private var showsCheckAgain: Bool {
+        switch model.installReadiness {
+        case .failed, .insufficientSpace:
+            true
+        case .checking, .ready:
+            false
+        }
     }
 
     private var readinessLabel: String {

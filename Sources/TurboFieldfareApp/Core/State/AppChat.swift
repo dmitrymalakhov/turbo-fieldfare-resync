@@ -1,5 +1,28 @@
 import Foundation
 
+public enum AppChatBranchKind: String, Codable, Equatable, Sendable {
+    case chatCopy
+    case messageContinuation
+    case editedUserMessage
+    case editedAssistantMessage
+}
+
+public enum AppChatTaskStatus: String, Codable, CaseIterable, Identifiable, Sendable {
+    case planned
+    case inProgress
+    case done
+
+    public var id: Self { self }
+}
+
+public enum AppChatTaskBucket: String, CaseIterable, Equatable, Sendable {
+    case overdue
+    case today
+    case upcoming
+    case noDueDate
+    case completed
+}
+
 public struct AppChatMessage: Identifiable, Codable, Equatable, Sendable {
     public enum Role: String, Codable, Equatable, Sendable {
         case user
@@ -31,8 +54,16 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
     public var messages: [AppChatMessage]
     public var draft: String
     public var draftAttachments: [AppPromptAttachment]
+    public var draftContextContent: String?
     public var contextSummary: String?
     public var summarizedThroughMessageID: AppChatMessage.ID?
+    public var branchedFromChatID: AppChat.ID?
+    public var branchedFromMessageID: AppChatMessage.ID?
+    public var branchKind: AppChatBranchKind?
+    public var editedAssistantMessageIDs: [AppChatMessage.ID]?
+    public var pinnedAt: Date?
+    public var taskStatus: AppChatTaskStatus?
+    public var taskDueAt: Date?
     public let createdAt: Date
     public var updatedAt: Date
 
@@ -41,8 +72,16 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
                 messages: [AppChatMessage] = [],
                 draft: String = "",
                 draftAttachments: [AppPromptAttachment] = [],
+                draftContextContent: String? = nil,
                 contextSummary: String? = nil,
                 summarizedThroughMessageID: AppChatMessage.ID? = nil,
+                branchedFromChatID: AppChat.ID? = nil,
+                branchedFromMessageID: AppChatMessage.ID? = nil,
+                branchKind: AppChatBranchKind? = nil,
+                editedAssistantMessageIDs: [AppChatMessage.ID]? = nil,
+                pinnedAt: Date? = nil,
+                taskStatus: AppChatTaskStatus? = nil,
+                taskDueAt: Date? = nil,
                 createdAt: Date = Date(),
                 updatedAt: Date = Date()) {
         self.id = id
@@ -50,10 +89,34 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
         self.messages = messages
         self.draft = draft
         self.draftAttachments = draftAttachments
+        self.draftContextContent = draftContextContent
         self.contextSummary = contextSummary
         self.summarizedThroughMessageID = summarizedThroughMessageID
+        self.branchedFromChatID = branchedFromChatID
+        self.branchedFromMessageID = branchedFromMessageID
+        self.branchKind = branchKind
+        self.editedAssistantMessageIDs = editedAssistantMessageIDs
+        self.pinnedAt = pinnedAt
+        self.taskStatus = taskStatus
+        self.taskDueAt = taskDueAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public var isPinned: Bool { pinnedAt != nil }
+
+    public var isTask: Bool { taskStatus != nil }
+
+    public func taskBucket(
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> AppChatTaskBucket? {
+        guard let taskStatus else { return nil }
+        if taskStatus == .done { return .completed }
+        guard let taskDueAt else { return .noDueDate }
+        if calendar.isDate(taskDueAt, inSameDayAs: now) { return .today }
+        if taskDueAt < calendar.startOfDay(for: now) { return .overdue }
+        return .upcoming
     }
 
     public var preview: String {
@@ -79,6 +142,18 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
         guard let summarizedThroughMessageID else { return false }
         return messages.contains { $0.id == summarizedThroughMessageID }
     }
+
+    var hasValidEditedAssistantReferences: Bool {
+        (editedAssistantMessageIDs ?? []).allSatisfy { editedID in
+            messages.contains {
+                $0.id == editedID && $0.role == .assistant
+            }
+        }
+    }
+
+    var hasValidTaskMetadata: Bool {
+        taskDueAt == nil || taskStatus != nil
+    }
 }
 
 struct AppChatArchive: Codable, Equatable, Sendable {
@@ -99,6 +174,8 @@ struct AppChatArchive: Codable, Equatable, Sendable {
             && Set(chats.map(\.id)).count == chats.count
             && chats.contains { $0.id == selectedChatID }
             && chats.allSatisfy(\.hasValidSummaryBoundary)
+            && chats.allSatisfy(\.hasValidEditedAssistantReferences)
+            && chats.allSatisfy(\.hasValidTaskMetadata)
     }
 }
 

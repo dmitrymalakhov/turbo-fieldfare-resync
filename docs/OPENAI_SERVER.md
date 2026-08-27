@@ -23,13 +23,14 @@ swift build -c release --product TurboFieldfareServer
   --max-context 16384
 ```
 
-The server loads the model before opening the port. Wait for
-`TurboFieldfareServer ready`, then keep the process running while clients use
-it.
+The server loads the model before opening the port, then prints a startup block
+with the base URL, health URL, model, context size, and cache configuration.
+Keep the process running while clients use it.
 
 Check the server from another terminal:
 
 ```bash
+curl --silent --show-error http://127.0.0.1:8080/
 curl --silent --show-error http://127.0.0.1:8080/health
 curl --silent --show-error http://127.0.0.1:8080/v1/models
 curl --silent --show-error http://127.0.0.1:8080/v1/chat/completions \
@@ -190,6 +191,7 @@ use.
 
 Endpoints:
 
+- `GET /` (service discovery)
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions`

@@ -37,9 +37,9 @@ public struct AppSidebarControlPresentation: Equatable, Sendable {
 }
 
 public enum AppChromeLayout {
-    public static let primaryMinimumWidth = 680
-    public static let chatSidebarWidth = 272
-    public static let inspectorWidth = 320
+    public static let primaryMinimumWidth = 620
+    public static let chatSidebarWidth = 260
+    public static let inspectorWidth = 340
     public static let dividerWidth = 1
     public static let minimumHeight = 560
     public static let headerHorizontalPadding = 20

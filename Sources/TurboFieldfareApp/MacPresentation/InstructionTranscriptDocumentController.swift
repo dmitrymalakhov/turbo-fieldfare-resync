@@ -9,10 +9,12 @@ public struct InstructionTranscriptMessage: Equatable, Sendable {
 
     public let role: Role
     public let content: String
+    public let isEdited: Bool
 
-    public init(role: Role, content: String) {
+    public init(role: Role, content: String, isEdited: Bool = false) {
         self.role = role
         self.content = content
+        self.isEdited = isEdited
     }
 }
 
@@ -38,6 +40,7 @@ public final class InstructionTranscriptDocumentController {
     public private(set) var prompt = ""
     public private(set) var history: [InstructionTranscriptMessage] = []
     public private(set) var response = ""
+    public private(set) var isResponseEdited = false
     public private(set) var isFinalized = false
     public private(set) var showsPrefillPlaceholder = false
     public private(set) var assistantRange = NSRange(location: 0, length: 0)
@@ -95,7 +98,8 @@ public final class InstructionTranscriptDocumentController {
         prompt: String,
         response: String,
         isTerminal: Bool,
-        showsPrefillPlaceholder: Bool = false
+        showsPrefillPlaceholder: Bool = false,
+        isResponseEdited: Bool = false
     ) -> UpdateResult {
         let history = prompt.isEmpty
             ? []
@@ -105,7 +109,8 @@ public final class InstructionTranscriptDocumentController {
             history: history,
             response: response,
             isTerminal: isTerminal,
-            showsPrefillPlaceholder: showsPrefillPlaceholder)
+            showsPrefillPlaceholder: showsPrefillPlaceholder,
+            isResponseEdited: isResponseEdited)
     }
 
     @discardableResult
@@ -114,7 +119,8 @@ public final class InstructionTranscriptDocumentController {
         history: [InstructionTranscriptMessage],
         response: String,
         isTerminal: Bool,
-        showsPrefillPlaceholder: Bool = false
+        showsPrefillPlaceholder: Bool = false,
+        isResponseEdited: Bool = false
     ) -> UpdateResult {
         let responseChanged = response != self.response
         let displaysPrefillPlaceholder = Self.shouldRunPrefillAnimation(
@@ -124,6 +130,7 @@ public final class InstructionTranscriptDocumentController {
         let needsRebuild = history != self.history
             || !response.hasPrefix(self.response)
             || (isFinalized && !isTerminal)
+            || isResponseEdited != self.isResponseEdited
             || displaysPrefillPlaceholder != self.showsPrefillPlaceholder
 
         var mutation: Mutation = .none
@@ -134,6 +141,7 @@ public final class InstructionTranscriptDocumentController {
                 storage: storage,
                 history: history,
                 response: response,
+                isResponseEdited: isResponseEdited,
                 showsPrefillPlaceholder: displaysPrefillPlaceholder)
             mutation = .rebuilt
         } else if response.count > self.response.count {
@@ -148,6 +156,7 @@ public final class InstructionTranscriptDocumentController {
         self.history = history
         self.prompt = history.last(where: { $0.role == .user })?.content ?? ""
         self.response = response
+        self.isResponseEdited = isResponseEdited
         self.showsPrefillPlaceholder = displaysPrefillPlaceholder
 
         if isTerminal && (!isFinalized || responseChanged) {
@@ -184,6 +193,7 @@ public final class InstructionTranscriptDocumentController {
         storage: NSMutableAttributedString,
         history: [InstructionTranscriptMessage],
         response: String,
+        isResponseEdited: Bool,
         showsPrefillPlaceholder: Bool
     ) {
         let document = NSMutableAttributedString()
@@ -191,14 +201,16 @@ public final class InstructionTranscriptDocumentController {
             switch message.role {
             case .user:
                 document.append(NSAttributedString(
-                    string: "You\n",
+                    string: message.isEdited ? "You (edited)\n" : "You\n",
                     attributes: Self.userLabelAttributes()))
                 document.append(NSAttributedString(
                     string: message.content,
                     attributes: Self.promptAttributes()))
             case .assistant:
                 document.append(NSAttributedString(
-                    string: "Answer\n",
+                    string: message.isEdited
+                        ? "Answer (edited)\n"
+                        : "Answer\n",
                     attributes: Self.assistantLabelAttributes()))
                 document.append(renderer.render(message.content).attributedString)
             }
@@ -207,7 +219,7 @@ public final class InstructionTranscriptDocumentController {
                 attributes: Self.promptAttributes()))
         }
         document.append(NSAttributedString(
-            string: "Answer\n",
+            string: isResponseEdited ? "Answer (edited)\n" : "Answer\n",
             attributes: Self.assistantLabelAttributes()))
         assistantRange = NSRange(location: document.length, length: 0)
         document.append(NSAttributedString(

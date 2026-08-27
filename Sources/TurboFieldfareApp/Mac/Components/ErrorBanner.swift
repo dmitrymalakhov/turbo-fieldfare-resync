@@ -1,9 +1,11 @@
+import AppKit
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct ErrorBanner: View {
     @Bindable var model: AppModel
+    @State private var showsDetails = false
 
     var body: some View {
         if let error = model.error,
@@ -15,6 +17,31 @@ struct ErrorBanner: View {
                     .font(.callout)
                     .lineLimit(2)
                 Spacer(minLength: 8)
+                Button("Details") {
+                    showsDetails.toggle()
+                }
+                .buttonStyle(.borderless)
+                .popover(isPresented: $showsDetails, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Error Details")
+                            .font(.headline)
+                        Text(error.technicalDetail)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack {
+                            Spacer()
+                            Button("Copy Details") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(
+                                    error.technicalDetail,
+                                    forType: .string)
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .frame(width: 420)
+                }
                 Button {
                     model.error = nil
                 } label: {
@@ -35,7 +62,6 @@ struct ErrorBanner: View {
                         Capsule().stroke(.red.opacity(0.55), lineWidth: 1)
                     }
             }
-            .help(error.technicalDetail)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }

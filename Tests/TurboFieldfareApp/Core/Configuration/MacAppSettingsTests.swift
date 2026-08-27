@@ -80,6 +80,10 @@ import Testing
         #expect(!settings.topPEnabled)
         #expect(settings.topP == 0.8)
         #expect(!settings.prefillEnabled)
+        #expect(settings.prefillChunkTokens == 128)
+        #expect(settings.expertCachePolicy == .lfu)
+        #expect(settings.rdadvisePolicy == .off)
+        #expect(settings.modelVerification == .fullSha256)
         #expect(settings.newlineShortcut == .return)
         #expect(settings.showPromptExamples)
         #expect(settings.sentPromptBehavior == .keep)
@@ -164,6 +168,10 @@ import Testing
             topPEnabled: false,
             topP: 0.8,
             prefillEnabled: false,
+            prefillChunkTokens: 64,
+            expertCachePolicy: .lru,
+            rdadvisePolicy: .adaptive,
+            modelVerification: .trustedInstall,
             newlineShortcut: .shiftReturn,
             showPromptExamples: false,
             sentPromptBehavior: .clear)
@@ -180,6 +188,10 @@ import Testing
         #expect(!model.topPEnabled)
         #expect(model.topP == 0.8)
         #expect(!model.runtimeOptions.prefillEnabled)
+        #expect(model.runtimeOptions.prefillChunkTokens == 64)
+        #expect(model.runtimeOptions.expertCachePolicy == .lru)
+        #expect(model.runtimeOptions.rdadvisePolicy == .adaptive)
+        #expect(model.runtimeOptions.modelVerification == .trustedInstall)
         #expect(model.newlineShortcut == .shiftReturn)
         #expect(!model.showPromptExamples)
         #expect(model.sentPromptBehavior == .clear)
@@ -199,6 +211,10 @@ import Testing
         #expect(saved.temperature == 0.6)
         #expect(saved.expertCacheSlots == 32)
         #expect(saved.prefillEnabled)
+        #expect(saved.prefillChunkTokens == 64)
+        #expect(saved.expertCachePolicy == .lru)
+        #expect(saved.rdadvisePolicy == .adaptive)
+        #expect(saved.modelVerification == .trustedInstall)
         #expect(saved.newlineShortcut == .shiftReturn)
         #expect(!saved.showPromptExamples)
         #expect(saved.sentPromptBehavior == .clear)

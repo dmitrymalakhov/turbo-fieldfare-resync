@@ -69,8 +69,10 @@ public final class AppModel {
     private var installGeneration: UInt64 = 0
     private var pendingExplicitLoadRuntimeKey: AppLoadedRuntimeKey?
     private var activeRunRuntimeKey: AppLoadedRuntimeKey?
-    private var activeRunChatID: AppChat.ID?
+    public private(set) var activeRunChatID: AppChat.ID?
     private var displayedAssistantMessageID: AppChatMessage.ID?
+    private var pendingSubmissionAfterLoad = false
+    private var clearedChatSnapshot: AppChat?
     private var hasHandledTerminalEvent = false
     private let memorySampler: AppMemorySampler
     private let settingsPersistenceEnabled: Bool
@@ -96,7 +98,11 @@ public final class AppModel {
         self.selectedChatID = chatLoadResult.archive.selectedChatID
         self.runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            expertCachePolicy: settings.expertCachePolicy,
+            prefillEnabled: settings.prefillEnabled,
+            prefillChunkTokens: settings.prefillChunkTokens,
+            rdadvisePolicy: settings.rdadvisePolicy,
+            modelVerification: settings.modelVerification)
         self.maxContextTokens = settings.contextTokens
         self.temperature = settings.temperature
         self.topKEnabled = settings.topKEnabled
@@ -128,6 +134,9 @@ public final class AppModel {
         }
         set {
             guard let index = selectedChatIndex else { return }
+            if chats[index].draft != newValue {
+                chats[index].draftContextContent = nil
+            }
             chats[index].draft = newValue
             chats[index].updatedAt = Date()
             scheduleChatPersistence()
@@ -143,8 +152,48 @@ public final class AppModel {
         chats[selectedChatIndex ?? chats.startIndex]
     }
 
+    public var sidebarChats: [AppChat] {
+        chats.sorted { lhs, rhs in
+            if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            if lhs.pinnedAt != rhs.pinnedAt {
+                return (lhs.pinnedAt ?? .distantPast)
+                    > (rhs.pinnedAt ?? .distantPast)
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+
+    public var taskChats: [AppChat] {
+        chats.filter(\.isTask).sorted { lhs, rhs in
+            let lhsCompleted = lhs.taskStatus == .done
+            let rhsCompleted = rhs.taskStatus == .done
+            if lhsCompleted != rhsCompleted { return !lhsCompleted }
+            switch (lhs.taskDueAt, rhs.taskDueAt) {
+            case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+                return lhsDate < rhsDate
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+
     public var transcriptBaseMessages: [AppChatMessage] {
         var messages: [AppChatMessage]
+        if isRunning, selectedChatID != activeRunChatID,
+           let last = selectedChat.messages.last, last.role == .assistant {
+            return Array(selectedChat.messages.dropLast())
+        }
         if let displayedAssistantMessageID {
             messages = selectedChat.messages.filter {
                 $0.id != displayedAssistantMessageID
@@ -158,6 +207,27 @@ public final class AppModel {
                 content: outputPromptText))
         }
         return messages
+    }
+
+    public var isSelectedChatRunning: Bool {
+        isRunning && selectedChatID == activeRunChatID
+    }
+
+    public func isChatRunning(id: AppChat.ID) -> Bool {
+        isRunning && id == activeRunChatID
+    }
+
+    public var activeRunChatTitle: String? {
+        guard let activeRunChatID else { return nil }
+        return chats.first(where: { $0.id == activeRunChatID })?.title
+    }
+
+    public var canNavigateChats: Bool {
+        !isRunning || activeRunChatID != nil
+    }
+
+    public var canEditSelectedChat: Bool {
+        !isRunning || (activeRunChatID != nil && selectedChatID != activeRunChatID)
     }
 
     private var selectedChatIndex: Int? {
@@ -274,18 +344,38 @@ public final class AppModel {
             && !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    public var canSubmitPrompt: Bool {
+        guard !isRunning,
+              !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return canRun || canLoadModel || canReloadModel
+    }
+
+    public var isPreparingSubmission: Bool {
+        pendingSubmissionAfterLoad && loadState.isLoading
+    }
+
     public var canCancel: Bool { isRunning && !isCancellationPending }
 
     public var hasOutputTranscript: Bool {
-        !selectedChat.messages.isEmpty || !outputPromptText.isEmpty || !outputText.isEmpty
+        !selectedChat.messages.isEmpty
+            || !displayedOutputPromptText.isEmpty
+            || !outputResponsePlainText.isEmpty
     }
 
     public var showsPromptExamples: Bool {
         showPromptExamples && promptText.isEmpty && promptAttachments.isEmpty
-            && !hasOutputTranscript && !isRunning
+            && !hasOutputTranscript
+            && (!isRunning || selectedChatID != activeRunChatID)
     }
 
     public var outputResponsePlainText: String {
+        if isRunning, selectedChatID != activeRunChatID {
+            return selectedChat.messages.last?.role == .assistant
+                ? selectedChat.messages.last?.content ?? ""
+                : ""
+        }
         guard let mailboxText = generationTranscriptMailbox?.completeText,
               !mailboxText.isEmpty else {
             return outputText
@@ -303,6 +393,35 @@ public final class AppModel {
             let label = message.role == .user ? "You" : "Answer"
             return "\(label):\n\(message.content)"
         }.joined(separator: "\n\n")
+    }
+
+    public var displayedOutputPromptText: String {
+        if isRunning, selectedChatID != activeRunChatID {
+            return selectedChat.messages.last(where: { $0.role == .user })?.content ?? ""
+        }
+        return outputPromptText
+    }
+
+    public var displayedResponseMessage: AppChatMessage? {
+        guard !isSelectedChatRunning,
+              let last = selectedChat.messages.last,
+              last.role == .assistant else {
+            return nil
+        }
+        return last
+    }
+
+    public var responseStyle: AppResponseStyle {
+        AppResponseStyle.resolve(
+            temperature: temperature,
+            topKEnabled: topKEnabled,
+            topK: topK,
+            topPEnabled: topPEnabled,
+            topP: topP)
+    }
+
+    public var canUndoClearHistory: Bool {
+        clearedChatSnapshot?.id == selectedChatID && !isRunning
     }
 
     public var liveTokensPerSecond: Double {
@@ -334,7 +453,8 @@ public final class AppModel {
     }
 
     public var generationTranscriptMailbox: GenerationTranscriptMailbox? {
-        guard phase != .compressing else { return nil }
+        guard phase != .compressing,
+              !isRunning || selectedChatID == activeRunChatID else { return nil }
         return (client as? any AppInferenceTranscriptReporting)?
             .generationTranscriptMailbox
     }
@@ -371,6 +491,8 @@ public final class AppModel {
         pendingExplicitLoadRuntimeKey = nil
         activeRunRuntimeKey = nil
         activeRunChatID = nil
+        pendingSubmissionAfterLoad = false
+        clearedChatSnapshot = nil
         loadedRuntimeKey = nil
         loadState = .notLoaded
         diagnostics = nil
@@ -395,6 +517,20 @@ public final class AppModel {
     public func loadModel() {
         guard canLoadModel else { return }
         beginLoad()
+    }
+
+    public func submitPrompt() {
+        guard canSubmitPrompt else { return }
+        if canRun {
+            pendingSubmissionAfterLoad = false
+            run()
+        } else if canLoadModel {
+            pendingSubmissionAfterLoad = true
+            loadModel()
+        } else if canReloadModel {
+            pendingSubmissionAfterLoad = true
+            reloadModel()
+        }
     }
 
     public func perform(_ action: AppModelAction) {
@@ -423,6 +559,90 @@ public final class AppModel {
     public func setSentPromptBehavior(_ behavior: AppSentPromptBehavior) {
         guard sentPromptBehavior != behavior else { return }
         sentPromptBehavior = behavior
+        persistSettings()
+    }
+
+    public func applyResponseStyle(_ style: AppResponseStyle) {
+        switch style {
+        case .precise:
+            temperature = 0
+            topKEnabled = false
+            topPEnabled = false
+        case .balanced:
+            temperature = 0.2
+            topKEnabled = true
+            topK = 64
+            topPEnabled = true
+            topP = 0.95
+        case .creative:
+            temperature = 0.8
+            topKEnabled = true
+            topK = 64
+            topPEnabled = true
+            topP = 0.95
+        case .custom:
+            return
+        }
+        persistSettings()
+    }
+
+    public func persistUserSettings() {
+        persistSettings()
+    }
+
+    public func resetUserSettings() {
+        let defaults = MacAppSettings()
+        maxContextTokens = defaults.contextTokens
+        runtimeOptions = AppRuntimeOptions(
+            expertCacheSlots: defaults.expertCacheSlots,
+            expertCachePolicy: defaults.expertCachePolicy,
+            prefillEnabled: defaults.prefillEnabled,
+            prefillChunkTokens: defaults.prefillChunkTokens,
+            rdadvisePolicy: defaults.rdadvisePolicy,
+            modelVerification: defaults.modelVerification)
+        temperature = defaults.temperature
+        topKEnabled = defaults.topKEnabled
+        topK = defaults.topK
+        topPEnabled = defaults.topPEnabled
+        topP = defaults.topP
+        persistSettings()
+    }
+
+    public var pendingRuntimeChangeSummary: String? {
+        guard hasStaleLoadedRuntime, let loadedRuntimeKey else { return nil }
+        var changes: [String] = []
+        if loadedRuntimeKey.maxContextTokens != maxContextTokens {
+            changes.append(
+                "Context \(loadedRuntimeKey.maxContextTokens / 1_024)K → \(maxContextTokens / 1_024)K")
+        }
+        if loadedRuntimeKey.expertCacheSlots != runtimeOptions.expertCacheSlots {
+            changes.append(
+                "Cache \(loadedRuntimeKey.expertCacheSlots) → \(runtimeOptions.expertCacheSlots) slots")
+        }
+        if loadedRuntimeKey.rdadvisePolicy != runtimeOptions.rdadvisePolicy {
+            changes.append(
+                "RDADVISE \(loadedRuntimeKey.rdadvisePolicy.label) → \(runtimeOptions.rdadvisePolicy.label)")
+        }
+        if loadedRuntimeKey.forceLogitsHead != currentForceLogitsHead {
+            changes.append(currentForceLogitsHead ? "Sampling enabled" : "Greedy decoding enabled")
+        }
+        return changes.isEmpty ? "Runtime settings changed" : changes.joined(separator: " · ")
+    }
+
+    public func discardPendingRuntimeChanges() {
+        guard let loadedRuntimeKey else { return }
+        maxContextTokens = loadedRuntimeKey.maxContextTokens
+        runtimeOptions.expertCacheSlots = loadedRuntimeKey.expertCacheSlots
+        runtimeOptions.expertCachePolicy = loadedRuntimeKey.expertCachePolicy
+        runtimeOptions.rdadvisePolicy = loadedRuntimeKey.rdadvisePolicy
+        runtimeOptions.modelVerification = loadedRuntimeKey.modelVerification
+        if loadedRuntimeKey.forceLogitsHead {
+            if temperature == 0 { temperature = 0.2 }
+        } else {
+            temperature = 0
+            topKEnabled = false
+            topPEnabled = false
+        }
         persistSettings()
     }
 
@@ -481,6 +701,7 @@ public final class AppModel {
         loadTask?.cancel()
         loadTask = nil
         pendingExplicitLoadRuntimeKey = nil
+        pendingSubmissionAfterLoad = false
         unloadGeneration &+= 1
         let generation = unloadGeneration
         unloadTask = Task { [weak self, lifecycle] in
@@ -710,7 +931,11 @@ public final class AppModel {
             forModelDirectory: modelDirectory)
         runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            expertCachePolicy: settings.expertCachePolicy,
+            prefillEnabled: settings.prefillEnabled,
+            prefillChunkTokens: settings.prefillChunkTokens,
+            rdadvisePolicy: settings.rdadvisePolicy,
+            modelVerification: settings.modelVerification)
         maxContextTokens = settings.contextTokens
         temperature = settings.temperature
         topKEnabled = settings.topKEnabled
@@ -795,6 +1020,10 @@ public final class AppModel {
             topPEnabled: topPEnabled,
             topP: topP,
             prefillEnabled: runtimeOptions.prefillEnabled,
+            prefillChunkTokens: runtimeOptions.prefillChunkTokens,
+            expertCachePolicy: runtimeOptions.expertCachePolicy,
+            rdadvisePolicy: runtimeOptions.rdadvisePolicy,
+            modelVerification: runtimeOptions.modelVerification,
             newlineShortcut: newlineShortcut,
             showPromptExamples: showPromptExamples,
             sentPromptBehavior: sentPromptBehavior)
@@ -839,6 +1068,7 @@ public final class AppModel {
         switch state {
         case .notLoaded:
             loadedRuntimeKey = nil
+            pendingSubmissionAfterLoad = false
         case .loading, .cancelling, .unloading:
             break
         case .ready(_, let seconds):
@@ -847,14 +1077,20 @@ public final class AppModel {
                 ?? currentRuntimeKey
             pendingExplicitLoadRuntimeKey = nil
             _ = seconds
+            if pendingSubmissionAfterLoad {
+                pendingSubmissionAfterLoad = false
+                run()
+            }
         case .failed(let loadError):
             pendingExplicitLoadRuntimeKey = nil
+            pendingSubmissionAfterLoad = false
             error = loadError
         }
     }
 
     public func clearOutput() {
-        guard !isRunning, let index = selectedChatIndex else { return }
+        guard canEditSelectedChat, let index = selectedChatIndex else { return }
+        clearedChatSnapshot = chats[index]
         chats[index].messages.removeAll()
         chats[index].contextSummary = nil
         chats[index].summarizedThroughMessageID = nil
@@ -868,22 +1104,56 @@ public final class AppModel {
         persistChats()
     }
 
+    public func undoClearHistory() {
+        guard let snapshot = clearedChatSnapshot,
+              snapshot.id == selectedChatID,
+              let index = selectedChatIndex,
+              !isRunning else {
+            return
+        }
+        let currentDraft = chats[index].draft
+        let currentAttachments = chats[index].draftAttachments
+        let currentDraftContext = chats[index].draftContextContent
+        let currentPinnedAt = chats[index].pinnedAt
+        let currentTaskStatus = chats[index].taskStatus
+        let currentTaskDueAt = chats[index].taskDueAt
+        chats[index] = snapshot
+        chats[index].draft = currentDraft
+        chats[index].draftAttachments = currentAttachments
+        chats[index].draftContextContent = currentDraftContext
+        chats[index].pinnedAt = currentPinnedAt
+        chats[index].taskStatus = currentTaskStatus
+        chats[index].taskDueAt = currentTaskDueAt
+        chats[index].updatedAt = Date()
+        clearedChatSnapshot = nil
+        synchronizeOutputWithSelectedChat()
+        persistChats()
+    }
+
+    public func dismissClearHistoryUndo() {
+        guard clearedChatSnapshot?.id == selectedChatID else { return }
+        clearedChatSnapshot = nil
+    }
+
     public func addPromptAttachment(_ attachment: AppPromptAttachment) {
-        guard !isRunning, let index = selectedChatIndex else { return }
+        guard canEditSelectedChat, let index = selectedChatIndex else { return }
+        chats[index].draftContextContent = nil
         chats[index].draftAttachments.append(attachment)
         chats[index].updatedAt = Date()
         persistChats()
     }
 
     public func removePromptAttachment(id: AppPromptAttachment.ID) {
-        guard !isRunning, let index = selectedChatIndex else { return }
+        guard canEditSelectedChat, let index = selectedChatIndex else { return }
+        chats[index].draftContextContent = nil
         chats[index].draftAttachments.removeAll { $0.id == id }
         chats[index].updatedAt = Date()
         persistChats()
     }
 
     public func clearPromptAttachments() {
-        guard !isRunning, let index = selectedChatIndex else { return }
+        guard canEditSelectedChat, let index = selectedChatIndex else { return }
+        chats[index].draftContextContent = nil
         chats[index].draftAttachments.removeAll()
         chats[index].updatedAt = Date()
         persistChats()
@@ -891,29 +1161,238 @@ public final class AppModel {
 
     @discardableResult
     public func createChat() -> AppChat.ID {
-        guard !isRunning else { return selectedChatID }
+        guard canNavigateChats else { return selectedChatID }
         persistChats()
         let chat = AppChat()
         chats.insert(chat, at: chats.startIndex)
         selectedChatID = chat.id
-        synchronizeOutputWithSelectedChat()
+        if !isRunning { synchronizeOutputWithSelectedChat() }
         persistChats()
         return chat.id
     }
 
+    @discardableResult
+    public func createTaskChat(
+        title: String,
+        status: AppChatTaskStatus,
+        dueAt: Date?
+    ) -> AppChat.ID {
+        guard canNavigateChats else { return selectedChatID }
+        let trimmedTitle = title.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        let now = Date()
+        let chat = AppChat(
+            title: trimmedTitle.isEmpty
+                ? "New task"
+                : String(trimmedTitle.prefix(80)),
+            taskStatus: status,
+            taskDueAt: dueAt,
+            createdAt: now,
+            updatedAt: now)
+        persistChats()
+        chats.insert(chat, at: chats.startIndex)
+        selectedChatID = chat.id
+        if !isRunning { synchronizeOutputWithSelectedChat() }
+        persistChats()
+        return chat.id
+    }
+
+    @discardableResult
+    public func branchChat(from id: AppChat.ID) -> AppChat.ID {
+        guard canEditChat(id: id),
+              let source = chats.first(where: { $0.id == id }) else {
+            return selectedChatID
+        }
+        let branch = makeChatBranch(
+            from: source,
+            retainedMessageCount: source.messages.count,
+            branchPointMessageID: source.messages.last?.id,
+            branchKind: .chatCopy)
+        chats.insert(branch, at: chats.startIndex)
+        selectedChatID = branch.id
+        if !isRunning { synchronizeOutputWithSelectedChat() }
+        persistChats()
+        return branch.id
+    }
+
+    @discardableResult
+    public func branchChat(
+        from chatID: AppChat.ID,
+        throughMessage messageID: AppChatMessage.ID
+    ) -> AppChat.ID? {
+        guard canEditChat(id: chatID),
+              let source = chats.first(where: { $0.id == chatID }),
+              let messageIndex = source.messages.firstIndex(where: {
+                  $0.id == messageID
+              }) else {
+            return nil
+        }
+
+        let branchPoint = source.messages[messageIndex]
+        let retainedMessageCount = branchPoint.role == .user
+            ? messageIndex
+            : messageIndex + 1
+        let invalidatedSummaryIndex = branchPoint.role == .user
+            ? messageIndex
+            : messageIndex + 1
+        var branch = makeChatBranch(
+            from: source,
+            retainedMessageCount: retainedMessageCount,
+            branchPointMessageID: messageID,
+            branchKind: .messageContinuation,
+            invalidatedSummaryStartingAt: invalidatedSummaryIndex)
+        if branchPoint.role == .user {
+            branch.draft = branchPoint.content
+            branch.draftContextContent = branchPoint.contextContent
+        }
+
+        insertAndSelectBranch(branch)
+        return branch.id
+    }
+
+    @discardableResult
+    public func branchChat(
+        from chatID: AppChat.ID,
+        editingMessage messageID: AppChatMessage.ID,
+        replacementContent: String
+    ) -> AppChat.ID? {
+        guard canEditChat(id: chatID),
+              let source = chats.first(where: { $0.id == chatID }),
+              let messageIndex = source.messages.firstIndex(where: {
+                  $0.id == messageID
+              }) else {
+            return nil
+        }
+        let replacement = replacementContent.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        guard !replacement.isEmpty else { return nil }
+
+        let editedMessage = source.messages[messageIndex]
+        let retainedMessageCount = editedMessage.role == .user
+            ? messageIndex
+            : messageIndex + 1
+        var branch = makeChatBranch(
+            from: source,
+            retainedMessageCount: retainedMessageCount,
+            branchPointMessageID: messageID,
+            branchKind: editedMessage.role == .user
+                ? .editedUserMessage
+                : .editedAssistantMessage,
+            invalidatedSummaryStartingAt: messageIndex)
+        if editedMessage.role == .user {
+            branch.draft = replacement
+            branch.draftContextContent = editedUserContextContent(
+                from: editedMessage,
+                replacement: replacement)
+        } else if let lastIndex = branch.messages.indices.last {
+            branch.messages[lastIndex].content = replacement
+            branch.messages[lastIndex].contextContent = replacement
+            var editedIDs = branch.editedAssistantMessageIDs ?? []
+            let editedID = branch.messages[lastIndex].id
+            if !editedIDs.contains(editedID) {
+                editedIDs.append(editedID)
+            }
+            branch.editedAssistantMessageIDs = editedIDs
+        }
+
+        insertAndSelectBranch(branch)
+        return branch.id
+    }
+
+    @discardableResult
+    public func regenerateAssistantMessage(
+        in chatID: AppChat.ID,
+        messageID: AppChatMessage.ID
+    ) -> AppChat.ID? {
+        guard !isRunning,
+              let source = chats.first(where: { $0.id == chatID }),
+              let assistantIndex = source.messages.firstIndex(where: {
+                  $0.id == messageID && $0.role == .assistant
+              }),
+              let userIndex = source.messages[..<assistantIndex].lastIndex(where: {
+                  $0.role == .user
+              }) else {
+            return nil
+        }
+        guard let branchID = branchChat(
+            from: chatID,
+            throughMessage: source.messages[userIndex].id) else {
+            return nil
+        }
+        if canRun { run() }
+        return branchID
+    }
+
+    public func branchSourceChat(for chatID: AppChat.ID) -> AppChat? {
+        guard let parentID = chats.first(where: { $0.id == chatID })?
+            .branchedFromChatID else {
+            return nil
+        }
+        return chats.first(where: { $0.id == parentID })
+    }
+
+    public func branchSourceMessage(for chatID: AppChat.ID) -> AppChatMessage? {
+        guard let branch = chats.first(where: { $0.id == chatID }),
+              let messageID = branch.branchedFromMessageID,
+              let source = branchSourceChat(for: chatID) else {
+            return nil
+        }
+        return source.messages.first(where: { $0.id == messageID })
+    }
+
+    public func selectBranchSource(of chatID: AppChat.ID) {
+        guard let source = branchSourceChat(for: chatID) else { return }
+        selectChat(id: source.id)
+    }
+
     public func selectChat(id: AppChat.ID) {
-        guard !isRunning, id != selectedChatID,
+        guard canNavigateChats, id != selectedChatID,
               chats.contains(where: { $0.id == id }) else {
             return
         }
         persistChats()
         selectedChatID = id
-        synchronizeOutputWithSelectedChat()
+        if !isRunning { synchronizeOutputWithSelectedChat() }
+        persistChats()
+    }
+
+    public func canEditChat(id: AppChat.ID) -> Bool {
+        !isRunning || (activeRunChatID != nil && activeRunChatID != id)
+    }
+
+    public func toggleChatPinned(id: AppChat.ID) {
+        guard let index = chats.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        chats[index].pinnedAt = chats[index].isPinned ? nil : Date()
+        persistChats()
+    }
+
+    public func setChatTask(
+        id: AppChat.ID,
+        status: AppChatTaskStatus,
+        dueAt: Date?
+    ) {
+        guard let index = chats.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        chats[index].taskStatus = status
+        chats[index].taskDueAt = dueAt
+        persistChats()
+    }
+
+    public func clearChatTask(id: AppChat.ID) {
+        guard let index = chats.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        chats[index].taskStatus = nil
+        chats[index].taskDueAt = nil
         persistChats()
     }
 
     public func renameChat(id: AppChat.ID, title: String) {
-        guard !isRunning, let index = chats.firstIndex(where: { $0.id == id }) else {
+        guard canEditChat(id: id),
+              let index = chats.firstIndex(where: { $0.id == id }) else {
             return
         }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -924,22 +1403,27 @@ public final class AppModel {
     }
 
     public func deleteChat(id: AppChat.ID) {
-        guard !isRunning, let index = chats.firstIndex(where: { $0.id == id }) else {
+        guard canEditChat(id: id),
+              let index = chats.firstIndex(where: { $0.id == id }) else {
             return
         }
         chats.remove(at: index)
+        if clearedChatSnapshot?.id == id { clearedChatSnapshot = nil }
         if chats.isEmpty {
             chats = [AppChat()]
         }
         if selectedChatID == id {
             selectedChatID = chats[min(index, chats.index(before: chats.endIndex))].id
-            synchronizeOutputWithSelectedChat()
+            if !isRunning { synchronizeOutputWithSelectedChat() }
         }
         persistChats()
     }
 
     public func run() {
         guard canRun else { return }
+        if clearedChatSnapshot?.id == selectedChatID {
+            clearedChatSnapshot = nil
+        }
         let request: AppGenerationRequest
         do {
             request = try makeRequest()
@@ -1087,10 +1571,16 @@ public final class AppModel {
         let attachmentCharacterBudget = max(
             0,
             totalCharacterBudget - promptText.count)
-        let composedPrompt = AppPromptContext.compose(
-            userPrompt: promptText,
-            attachments: promptAttachments,
-            maximumAttachmentCharacters: attachmentCharacterBudget)
+        let composedPrompt: String
+        if promptAttachments.isEmpty,
+           let draftContextContent = selectedChat.draftContextContent {
+            composedPrompt = draftContextContent
+        } else {
+            composedPrompt = AppPromptContext.compose(
+                userPrompt: promptText,
+                attachments: promptAttachments,
+                maximumAttachmentCharacters: attachmentCharacterBudget)
+        }
         let pendingMessage = AppGenerationMessage(
             role: .user,
             content: composedPrompt)
@@ -1109,6 +1599,20 @@ public final class AppModel {
             pendingMessage: pendingMessage).request
         try request.validate(requireModelDirectory: true)
         return request
+    }
+
+    public func estimateSelectedContextUsage() async -> AppContextUsage? {
+        guard !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        do {
+            let request = try makeRequest()
+            return try await AppContextUsageEstimator.estimate(request)
+        } catch is CancellationError {
+            return nil
+        } catch {
+            return nil
+        }
     }
 
     private var transportCharacterBudget: Int {
@@ -1515,6 +2019,7 @@ public final class AppModel {
     }
 
     private func finishTerminalRun() {
+        let completedChatID = activeRunChatID
         appendAssistantMessageIfNeeded()
         phase = .idle
         runState = .idle
@@ -1522,6 +2027,13 @@ public final class AppModel {
         activeRunRuntimeKey = nil
         activeRunChatID = nil
         runTask = nil
+        if selectedChatID != completedChatID {
+            let completedDiagnostics = diagnostics
+            let completedError = error
+            synchronizeOutputWithSelectedChat()
+            diagnostics = completedDiagnostics
+            error = completedError
+        }
     }
 
     private func appendUserMessage(
@@ -1535,6 +2047,7 @@ public final class AppModel {
             contextContent: contextContent)
         chats[index].messages.append(message)
         chats[index].draftAttachments.removeAll()
+        chats[index].draftContextContent = nil
         chats[index].updatedAt = Date()
         if chats[index].title == "New chat" {
             chats[index].title = suggestedChatTitle(from: visibleContent)
@@ -1595,6 +2108,90 @@ public final class AppModel {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let title = String(oneLine.prefix(48))
         return title.isEmpty ? "New chat" : title
+    }
+
+    private func makeChatBranch(
+        from source: AppChat,
+        retainedMessageCount: Int,
+        branchPointMessageID: AppChatMessage.ID?,
+        branchKind: AppChatBranchKind,
+        invalidatedSummaryStartingAt invalidatedSummaryIndex: Int? = nil
+    ) -> AppChat {
+        let retainedMessages = source.messages.prefix(retainedMessageCount)
+        var clonedMessages: [AppChatMessage] = []
+        clonedMessages.reserveCapacity(retainedMessages.count)
+        var clonedMessageIDs: [AppChatMessage.ID: AppChatMessage.ID] = [:]
+        for message in retainedMessages {
+            let clone = AppChatMessage(
+                role: message.role,
+                content: message.content,
+                contextContent: message.contextContent,
+                createdAt: message.createdAt)
+            clonedMessages.append(clone)
+            clonedMessageIDs[message.id] = clone.id
+        }
+
+        var contextSummary = source.contextSummary
+        var summaryBoundaryID = source.summarizedThroughMessageID.flatMap {
+            clonedMessageIDs[$0]
+        }
+        if let boundaryID = source.summarizedThroughMessageID,
+           let boundaryIndex = source.messages.firstIndex(where: {
+               $0.id == boundaryID
+           }),
+           let invalidatedSummaryIndex,
+           boundaryIndex >= invalidatedSummaryIndex {
+            contextSummary = nil
+            summaryBoundaryID = nil
+        } else if source.summarizedThroughMessageID != nil,
+                  summaryBoundaryID == nil {
+            contextSummary = nil
+        }
+
+        let editedAssistantMessageIDs = source.editedAssistantMessageIDs?
+            .compactMap { clonedMessageIDs[$0] }
+
+        let now = Date()
+        return AppChat(
+            title: branchTitle(from: source.title),
+            messages: clonedMessages,
+            contextSummary: contextSummary,
+            summarizedThroughMessageID: summaryBoundaryID,
+            branchedFromChatID: source.id,
+            branchedFromMessageID: branchPointMessageID,
+            branchKind: branchKind,
+            editedAssistantMessageIDs: editedAssistantMessageIDs?.isEmpty == false
+                ? editedAssistantMessageIDs
+                : nil,
+            createdAt: now,
+            updatedAt: now)
+    }
+
+    private func insertAndSelectBranch(_ branch: AppChat) {
+        chats.insert(branch, at: chats.startIndex)
+        selectedChatID = branch.id
+        if !isRunning { synchronizeOutputWithSelectedChat() }
+        persistChats()
+    }
+
+    private func editedUserContextContent(
+        from message: AppChatMessage,
+        replacement: String
+    ) -> String {
+        guard message.contextContent != message.content,
+              let markerRange = message.contextContent.range(
+                  of: "\nUser request:\n",
+                  options: .backwards) else {
+            return replacement
+        }
+        return String(message.contextContent[..<markerRange.upperBound])
+            + replacement
+    }
+
+    private func branchTitle(from title: String) -> String {
+        let suffix = " — branch"
+        let maximumBaseLength = max(0, 80 - suffix.count)
+        return String(title.prefix(maximumBaseLength)) + suffix
     }
 
     private func clearLoadTask(generation: UInt64) {

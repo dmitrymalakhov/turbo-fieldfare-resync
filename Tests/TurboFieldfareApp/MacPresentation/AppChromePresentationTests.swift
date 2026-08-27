@@ -74,16 +74,16 @@ import TurboFieldfareAppCore
     @Test func minimumWindowWidthTracksVisibleSidebars() {
         #expect(AppChromeLayout.minimumWindowWidth(
             isChatSidebarVisible: false,
-            isInspectorVisible: false) == 680)
+            isInspectorVisible: false) == 620)
         #expect(AppChromeLayout.minimumWindowWidth(
             isChatSidebarVisible: true,
-            isInspectorVisible: false) == 953)
+            isInspectorVisible: false) == 881)
         #expect(AppChromeLayout.minimumWindowWidth(
             isChatSidebarVisible: false,
-            isInspectorVisible: true) == 1_001)
+            isInspectorVisible: true) == 961)
         #expect(AppChromeLayout.minimumWindowWidth(
             isChatSidebarVisible: true,
-            isInspectorVisible: true) == 1_274)
+            isInspectorVisible: true) == 1_222)
     }
 
     @Test func headerUsesSymmetricHorizontalPadding() {
