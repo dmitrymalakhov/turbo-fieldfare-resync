@@ -22,6 +22,11 @@ public struct AppPromptAttachment: Identifiable, Codable, Equatable, Sendable {
     public var characterCount: Int {
         extractedText.count
     }
+
+    public var approximateTokenCount: Int {
+        guard !extractedText.isEmpty else { return 0 }
+        return max(1, Int(ceil(Double(extractedText.count) / 4.0)))
+    }
 }
 
 public enum AppPromptContext {

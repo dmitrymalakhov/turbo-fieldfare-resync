@@ -280,6 +280,13 @@ struct HTTPServerTests {
         let health = try await URLSession.shared.data(
             from: URL(string: "http://127.0.0.1:\(port)/health")!).0
         #expect(String(decoding: health, as: UTF8.self).contains(#""status":"ok""#))
+        #expect(String(decoding: health, as: UTF8.self).contains(#""model":"test-model""#))
+
+        let discovery = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:\(port)/")!).0
+        let discoveryText = String(decoding: discovery, as: UTF8.self)
+        #expect(discoveryText.contains("TurboFieldfareServer"))
+        #expect(discoveryText.contains("/v1/chat/completions"))
 
         let models = try await URLSession.shared.data(
             from: URL(string: "http://127.0.0.1:\(port)/v1/models")!).0

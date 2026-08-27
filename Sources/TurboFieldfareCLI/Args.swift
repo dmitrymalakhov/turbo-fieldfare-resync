@@ -17,6 +17,8 @@ public struct Args: Equatable, Sendable {
     public var seed: UInt64?
     public var stops: [String]
     public var quiet: Bool
+    public var progress: Bool
+    public var metricsJSON: Bool
     public var expertCacheSlots: Int
     public var expertCachePolicy: RuntimeExpertCachePolicy
     public var prefillPolicy: RuntimePrefillPolicy
@@ -42,6 +44,8 @@ public struct Args: Equatable, Sendable {
                 seed: UInt64? = nil,
                 stops: [String] = [],
                 quiet: Bool = false,
+                progress: Bool = false,
+                metricsJSON: Bool = false,
                 expertCacheSlots: Int = RuntimeConfiguration.production.expertCacheSlots,
                 expertCachePolicy: RuntimeExpertCachePolicy = RuntimeConfiguration.production.expertCachePolicy,
                 prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
@@ -64,6 +68,8 @@ public struct Args: Equatable, Sendable {
         self.seed = seed
         self.stops = stops
         self.quiet = quiet
+        self.progress = progress
+        self.metricsJSON = metricsJSON
         self.expertCacheSlots = expertCacheSlots
         self.expertCachePolicy = expertCachePolicy
         self.prefillPolicy = prefillPolicy
@@ -92,7 +98,7 @@ public enum ArgsError: Error, Equatable, CustomStringConvertible {
         case .requiredMissing(let flag): return "required flag missing: \(flag)"
         case .mutuallyExclusive(let a, let b): return "\(a) and \(b) are mutually exclusive"
         case .modeMissing:
-            return "one of --prompt, --chat-prompt or --messages-file is required"
+            return "one of --prompt, --chat (or --chat-prompt), or --messages-file is required"
         case .imagePromptNeedsExpertCacheSlots(let have, let need):
             return "--image requires chunked prefill, which needs at least \(need) "
                 + "expert-cache slots; --expert-cache-slots \(have) cannot serve it: "
@@ -105,21 +111,22 @@ extension Args {
     public static let usage = """
     TurboFieldfareCLI — Gemma 4 26B-A4B text generation
 
-    usage: TurboFieldfareCLI --model <dir>
-           (--prompt <string> | --chat-prompt <string> | --messages-file <path>) [options]
+    usage: TurboFieldfareCLI (--chat <message> | --prompt <string> | --messages-file <path>) [options]
+           TurboFieldfareCLI chat <message> [options]
+           TurboFieldfareCLI run <raw-prompt> [options]
 
-    required:
-      --model <dir>             Path to a .gturbo model directory.
-      --prompt <string>         Raw-completion prompt.
-      --chat-prompt <string>    Single-turn instruction chat; pairs with --image
-      --messages-file <path>    JSON chat messages with role and content fields.
-      --image <path>            Attach an image; repeatable. Needs --chat-prompt
-                                and an installed companion pack.
-      --vision-pack <dir>       Companion pack (default beside the model).
-      --vision-residency <on-demand|keep-ready>
-                                Routed-expert residency during vision (default on-demand).
+    input (choose one):
+      --chat <message>           Single instruction using Gemma's chat template.
+      --chat-prompt <message>    Alias of --chat; required by --image.
+      --prompt <string>          Raw-completion prompt.
+      --messages-file <path>     JSON chat messages with role and content fields.
 
     options:
+      --model <dir>              Model directory (default scratch/gemma4.gturbo).
+      --image <path>             Attach an image; repeatable. Needs chat input.
+      --vision-pack <dir>        Companion pack (default beside the model).
+      --vision-residency <on-demand|keep-ready>
+                                 Routed-expert residency during vision (default on-demand).
       --max-new <int>            Generated-token limit (default 1024).
       --max-context <int>        Context limit in tokens (default 8192).
       --temperature <float>      Sampling temperature (default 0.2; 0 = greedy).
@@ -129,6 +136,8 @@ extension Args {
       --seed <uint64>            Deterministic sampling seed (default off).
       --stop <string>            Stop substring (repeatable).
       --quiet                    Suppress the timing footer.
+      --progress                 Report tokenizer, model-load, and prefill progress to stderr.
+      --metrics-json             Emit the final timing footer as JSON on stderr.
       --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 16).
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
@@ -181,9 +190,24 @@ extension Args {
     }
 
     public static func parse(_ argv: [String]) throws -> Args {
-        var model: String?
-        var prompt: String?
-        var chatPrompt: String?
+        var input = argv
+        var positionalPrompt: String?
+        var positionalChatPrompt: String?
+        if let command = input.first, command == "chat" || command == "run" {
+            guard input.count >= 2 else {
+                throw ArgsError.missingValue(flag: command)
+            }
+            let value = input[1]
+            if command == "chat" {
+                positionalChatPrompt = value
+            } else {
+                positionalPrompt = value
+            }
+            input.removeFirst(2)
+        }
+        var model = "scratch/gemma4.gturbo"
+        var prompt: String? = positionalPrompt
+        var chatPrompt: String? = positionalChatPrompt
         var messagesFile: String?
         var images: [String] = []
         var visionPack: String?
@@ -197,6 +221,8 @@ extension Args {
         var seed: UInt64?
         var stops: [String] = []
         var quiet = false
+        var progress = false
+        var metricsJSON = false
         let runtimeDefaults = RuntimeConfiguration.production
         var expertCacheSlots = runtimeDefaults.expertCacheSlots
         var expertCachePolicy = runtimeDefaults.expertCachePolicy
@@ -206,98 +232,104 @@ extension Args {
         var rdadvisePolicy = runtimeDefaults.rdadvisePolicy
 
         var index = 0
-        while index < argv.count {
-            let flag = argv[index]
+        while index < input.count {
+            let flag = input[index]
             switch flag {
-            case "--help":
+            case "--help", "-h":
                 throw ArgsError.helpRequested
             case "--quiet":
                 quiet = true
                 index += 1
+            case "--progress":
+                progress = true
+                index += 1
+            case "--metrics-json":
+                metricsJSON = true
+                index += 1
             case "--model":
-                model = try takeValue(argv, &index, flag: flag)
+                model = try takeValue(input, &index, flag: flag)
             case "--prompt":
-                prompt = try takeValue(argv, &index, flag: flag)
-            case "--chat-prompt":
-                chatPrompt = try takeValue(argv, &index, flag: flag)
+                prompt = try takeValue(input, &index, flag: flag)
+            case "--chat", "--chat-prompt":
+                chatPrompt = try takeValue(input, &index, flag: flag)
             case "--image":
-                images.append(try takeValue(argv, &index, flag: flag))
+                images.append(try takeValue(input, &index, flag: flag))
             case "--vision-pack":
-                visionPack = try takeValue(argv, &index, flag: flag)
+                visionPack = try takeValue(input, &index, flag: flag)
             case "--vision-residency":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let policy = VisionResidencyPolicy(rawValue: value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 visionResidency = policy
             case "--messages-file":
-                messagesFile = try takeValue(argv, &index, flag: flag)
+                messagesFile = try takeValue(input, &index, flag: flag)
             case "--max-new":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 maxNew = parsed
             case "--max-context":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 maxContext = parsed
             case "--temperature":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Float(value), parsed >= 0 else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 temperature = parsed
             case "--top-k":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Int(value), (0...256).contains(parsed) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 topK = parsed == 0 ? nil : parsed
             case "--top-p":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Float(value), parsed > 0, parsed <= 1 else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 topP = parsed
             case "--repetition-penalty":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Float(value), parsed > 0 else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 repetitionPenalty = parsed
             case "--seed":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = UInt64(value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 seed = parsed
             case "--stop":
-                stops.append(try takeValue(argv, &index, flag: flag))
+                stops.append(try takeValue(input, &index, flag: flag))
             case "--expert-cache-slots":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = Int(value),
                       RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 expertCacheSlots = parsed
             case "--expert-cache-policy":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = RuntimeExpertCachePolicy(rawValue: value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 expertCachePolicy = parsed
             case "--prefill":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 switch value {
                 case "on": prefillPolicy = .chunked
                 case "off": prefillPolicy = .off
                 default: throw ArgsError.invalidValue(flag: flag, value: value)
                 }
             case "--prefill-chunk-tokens":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 if value == "auto" {
                     prefillChunkTokensAuto = true
                     break
@@ -309,7 +341,7 @@ extension Args {
                 prefillChunkTokensAuto = false
                 prefillChunkTokens = parsed
             case "--rdadvise":
-                let value = try takeValue(argv, &index, flag: flag)
+                let value = try takeValue(input, &index, flag: flag)
                 guard let parsed = RDAdvicePolicyMode(rawValue: value) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
@@ -319,15 +351,14 @@ extension Args {
             }
         }
 
-        guard let model else { throw ArgsError.requiredMissing("--model") }
-        if prompt != nil && messagesFile != nil {
+        if prompt != nil, chatPrompt != nil {
+            throw ArgsError.mutuallyExclusive("--prompt", "--chat")
+        }
+        if prompt != nil, messagesFile != nil {
             throw ArgsError.mutuallyExclusive("--prompt", "--messages-file")
         }
-        if prompt != nil, chatPrompt != nil {
-            throw ArgsError.mutuallyExclusive("--prompt", "--chat-prompt")
-        }
         if messagesFile != nil, chatPrompt != nil {
-            throw ArgsError.mutuallyExclusive("--chat-prompt", "--messages-file")
+            throw ArgsError.mutuallyExclusive("--chat", "--messages-file")
         }
         if prompt != nil, !images.isEmpty {
             throw ArgsError.mutuallyExclusive("--prompt", "--image")
@@ -369,6 +400,8 @@ extension Args {
                              seed: seed,
                              stops: stops,
                              quiet: quiet,
+                             progress: progress,
+                             metricsJSON: metricsJSON,
                              expertCacheSlots: expertCacheSlots,
                              expertCachePolicy: expertCachePolicy,
                              prefillPolicy: prefillPolicy,

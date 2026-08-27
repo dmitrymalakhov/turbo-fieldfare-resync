@@ -57,8 +57,8 @@ required by the tokenizer. The complete release build includes the foreground
 Mac app and its sibling decode-service executable.
 
 When the app opens, choose **Download** and let TurboFieldfare fetch and repack
-the pinned model (about 15 GB). Once it is ready, choose **Load Model** in the
-header from any chat, type your prompt, and press **Generate**.
+the pinned model (about 15 GB). Once it is ready, type a prompt and choose
+**Load & Send**. The app loads the model and submits the prompt as one action.
 
 ## At a glance
 
@@ -114,14 +114,39 @@ formatting automatically. Each chat keeps its own multi-turn history and draft
 attachments. Chats live in a collapsible left sidebar with a dedicated
 **New chat** button; press <kbd>Command</kbd>+<kbd>N</kbd> to start another
 context or <kbd>Control</kbd>+<kbd>Command</kbd>+<kbd>S</kbd> to toggle the
-sidebar. Its visibility is independent from the collapsible right settings
-pane. Chat history is written locally on a serialized background queue and
+sidebar. Search matches chat titles, previews, and message content. You can
+browse or draft in another chat while a response continues in its original
+chat. Pin important chats from their action menu, or press
+<kbd>Shift</kbd>+<kbd>Command</kbd>+<kbd>P</kbd>, to keep them in a separate
+section above recent work. The chat sidebar's visibility is independent from
+the collapsible right settings pane.
+Switch the sidebar from **Chats** to **Scheduled** to use conversations as a local
+work queue. A chat's actions menu can assign **To Do**, **In Progress**, or
+**Done**, with an optional due date and time. The task view groups work into
+**Overdue**, **Today**, **Upcoming**, **No Due Date**, and **Completed** without
+copying the conversation or its attachments. Due dates organize work locally;
+they do not start the model or send notifications in the background.
+Inside **Scheduled**, **New task** creates the task and its chat together. The
+editor includes quick **Today**, **Tomorrow**, and **Next Week** due-date choices,
+and the circle beside each scheduled item completes or reopens it without
+opening a menu. A compact summary keeps open, overdue, and due-today counts
+visible above the list.
+Chat history is written locally on a serialized background queue and
 flushed when the app terminates. If the archive cannot be decoded, the
 unreadable file is preserved as `mac-app-chats.recovery-*.json` instead of
 being deleted.
 
+Each message exposes contextual actions for copy, edit in a branch, continue
+from that point, or regenerate an assistant reply in a branch. Branches retain
+their source relationship without rewriting the original conversation. The
+conversation menu can export the visible transcript as plain text. Clearing a
+chat requires confirmation and can be undone immediately afterward.
+
 The composer can extract text locally from PDF, DOCX, PPTX, and XLSX files and
 include it with the next message. Files are not uploaded to a remote service.
+Files can be selected with the paperclip or dropped onto the composer, and
+extracted text can be previewed before sending. The composer reports estimated
+context use while you type so oversized prompts are visible before submission.
 Scanned PDFs need a selectable text layer; images, slide graphics, and legacy
 binary Office files such as XLS are not model inputs. Long extracted text is
 trimmed to the configured context window and marked as truncated. Before a turn
@@ -191,16 +216,21 @@ Installation does not load the model into memory.
 
 After installation:
 
-1. Choose **Load Model**.
-2. Enter a prompt in the composer.
-3. Optionally use the paperclip to attach PDF, DOCX, PPTX, or XLSX files.
-4. Choose **Generate**, or press <kbd>Command</kbd>+<kbd>Return</kbd>. Use **Settings > Send Message With** to choose Return or Command-Return.
-5. Send another message to continue the conversation, or choose **New Chat** to start over.
-6. Use the stop button or <kbd>Escape</kbd> to end generation early.
+1. Enter a prompt in the composer.
+2. Optionally use the paperclip or drag and drop to attach PDF, DOCX, PPTX, or
+   XLSX files.
+3. Choose **Load & Send**. Once loaded, the same control reads **Send**. You
+   can also press <kbd>Command</kbd>+<kbd>Return</kbd>. Use
+   **Settings > Send Message With** to choose Return or Command-Return.
+4. Send another message to continue the conversation, or choose **New Chat** to start over.
+5. Use the stop button or <kbd>Escape</kbd> to end generation early.
 
 The status bar shows generation progress, decode speed, and memory use. Use the
-right pane to configure sampling, context length, expert-cache slots, and
-runtime options. Hide or restore it with its status-bar button or
+right pane for response-style presets and context length. Detailed sampling,
+expert-cache, and runtime options live under **Advanced controls**. Settings
+that affect model loading are grouped into a pending change with explicit
+**Apply & Reload** and **Revert** actions. The pane is hidden by default; show
+or hide it with its status-bar button or
 <kbd>Shift</kbd>+<kbd>Command</kbd>+<kbd>I</kbd>. See
 [Runtime controls](docs/RUNTIME_CONTROLS.md) for details and defaults.
 
@@ -280,6 +310,20 @@ prompt always prefills chunked.
 
 #### Instruction chat
 
+For a single instruction, use the concise `chat` command. From the repository
+root, `scratch/gemma4.gturbo` is the default model path:
+
+```bash
+swift run -c release TurboFieldfareCLI chat \
+  "Explain why chunked prefill keeps memory bounded."
+```
+
+Use `run` for a raw-completion prompt instead of the instruction template:
+
+```bash
+swift run -c release TurboFieldfareCLI run "The capital of France is"
+```
+
 Put chat messages in a JSON array and pass it with `--messages-file`:
 
 ```json
@@ -290,7 +334,6 @@ Put chat messages in a JSON array and pass it with `--messages-file`:
 
 ```bash
 swift run -c release TurboFieldfareCLI \
-  --model scratch/gemma4.gturbo \
   --messages-file messages.json
 ```
 
@@ -310,7 +353,9 @@ swift run -c release TurboFieldfareCLI --help
 ```
 
 Generated text goes to standard output. Timing statistics go to standard error;
-add `--quiet` to suppress that footer in scripts.
+add `--progress` for load and prefill progress, `--metrics-json` for a
+machine-readable footer, or `--quiet` to suppress the footer in scripts. Pass
+`--model <dir>` only when the model is outside the default location.
 
 ### Local OpenAI-compatible server
 
@@ -322,8 +367,9 @@ swift build -c release --product TurboFieldfareServer
   --model scratch/gemma4.gturbo
 ```
 
-It listens on `http://127.0.0.1:8080/v1` and supports Chat Completions,
-streaming, function tools, and single-prefix prompt reuse. The client must
+It listens on `http://127.0.0.1:8080/v1`; `GET /` describes the service and its
+endpoints. It supports Chat Completions, streaming, function tools, and
+single-prefix prompt reuse. The client must
 authorize and run every tool call. Keep the server on loopback; it has no
 remote authentication or TLS.
 

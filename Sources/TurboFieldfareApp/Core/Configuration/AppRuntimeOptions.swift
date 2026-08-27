@@ -1,7 +1,7 @@
 import Foundation
 import TurboFieldfare
 
-public enum AppExpertCachePolicy: String, CaseIterable, Sendable, Identifiable {
+public enum AppExpertCachePolicy: String, CaseIterable, Codable, Sendable, Identifiable {
     case lfu
     case lru
 
@@ -28,7 +28,7 @@ public enum AppRDAdvicePolicy: String, Codable, CaseIterable, Sendable, Identifi
     }
 }
 
-public enum AppModelVerification: String, CaseIterable, Sendable, Identifiable {
+public enum AppModelVerification: String, CaseIterable, Codable, Sendable, Identifiable {
     case fullSha256 = "full-sha256"
     case trustedInstall = "trusted-install"
 

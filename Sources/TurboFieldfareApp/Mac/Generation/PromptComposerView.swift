@@ -14,6 +14,8 @@ struct PromptComposerView: View {
     @State private var isImportingDocuments = false
     @State private var isExtractingDocuments = false
     @State private var documentImportError: String?
+    @State private var previewedAttachment: AppPromptAttachment?
+    @State private var contextUsage: AppContextUsage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -56,6 +58,22 @@ struct PromptComposerView: View {
             allowedContentTypes: DocumentTextExtractor.supportedContentTypes,
             allowsMultipleSelection: true,
             onCompletion: handleDocumentSelection)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard model.canEditSelectedChat, !urls.isEmpty else { return false }
+            importDocuments(urls)
+            return true
+        }
+        .sheet(item: $previewedAttachment) { attachment in
+            AttachmentPreviewSheet(attachment: attachment)
+        }
+        .task(id: contextEstimationKey) {
+            contextUsage = nil
+            guard !model.promptText.trimmingCharacters(
+                in: .whitespacesAndNewlines).isEmpty else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            contextUsage = await model.estimateSelectedContextUsage()
+        }
     }
 
     private var editor: some View {
@@ -65,11 +83,11 @@ struct PromptComposerView: View {
                 get: { promptFocused },
                 set: { promptFocused = $0 }),
             newlineShortcut: model.newlineShortcut,
-            canRun: model.canRun,
+            canRun: model.canSubmitPrompt,
             canAcceptImages: model.isImageInputAvailable
                 && !model.isRunning
                 && !model.isAddingImages,
-            onSubmit: model.run,
+            onSubmit: model.submitPrompt,
             onImagesDropped: { model.addImages($0) },
             onImageDataPasted: model.addImageData,
             onPromisedImagesReceived: { urls, directory in
@@ -107,7 +125,12 @@ struct PromptComposerView: View {
     }
 
     private var editorHeight: CGFloat {
-        model.shouldShowPromptExamples ? 46 : 84
+        let explicitLines = model.promptText.split(
+            separator: "\n",
+            omittingEmptySubsequences: false).count
+        let wrappedLines = max(1, model.promptText.count / 84 + 1)
+        let lines = min(max(max(explicitLines, wrappedLines), 3), 9)
+        return CGFloat(lines * 20 + 12)
     }
 
     private var footer: some View {
@@ -130,7 +153,13 @@ struct PromptComposerView: View {
             }
             attachDocumentAction
             promptTips
+            if let contextUsage {
+                contextIndicator(contextUsage)
+            }
             Spacer()
+            Text(shortcutHint)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
             clearAction
             GenerateControl(model: model)
         }
@@ -177,14 +206,19 @@ struct PromptComposerView: View {
                     HStack(spacing: 7) {
                         Image(systemName: "doc.text")
                             .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(attachment.fileName)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
-                            Text(attachmentDetail(attachment))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                        Button {
+                            previewedAttachment = attachment
+                        } label: {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(attachment.fileName)
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(1)
+                                Text(attachmentDetail(attachment))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
                         Button {
                             model.removePromptAttachment(id: attachment.id)
                         } label: {
@@ -193,7 +227,7 @@ struct PromptComposerView: View {
                         }
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
-                        .disabled(model.isRunning)
+                        .disabled(!model.canEditSelectedChat)
                     }
                     .padding(.leading, 10)
                     .padding(.trailing, 7)
@@ -230,7 +264,7 @@ struct PromptComposerView: View {
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
-        .disabled(model.isRunning || isExtractingDocuments)
+        .disabled(!model.canEditSelectedChat || isExtractingDocuments)
         .help("Attach PDF, Word, PowerPoint, or Excel files")
         .accessibilityLabel(isExtractingDocuments
                             ? "Extracting document text"
@@ -288,9 +322,10 @@ struct PromptComposerView: View {
     }
 
     private func attachmentDetail(_ attachment: AppPromptAttachment) -> String {
-        let count = attachment.characterCount.formatted(.number.notation(.compactName))
+        let count = attachment.approximateTokenCount.formatted(
+            .number.notation(.compactName))
         let suffix = attachment.wasTruncatedDuringExtraction ? " • truncated" : ""
-        return "\(attachment.formatLabel) • \(count) chars\(suffix)"
+        return "\(attachment.formatLabel) • ≈\(count) tokens\(suffix)"
     }
 
     private func handleDocumentSelection(_ result: Result<[URL], any Error>) {
@@ -370,6 +405,51 @@ struct PromptComposerView: View {
             .buttonStyle(.borderless)
             .help("Clear chat history")
         }
+    }
+
+    private func contextIndicator(_ usage: AppContextUsage) -> some View {
+        HStack(spacing: 6) {
+            ProgressView(value: usage.fraction)
+                .progressViewStyle(.linear)
+                .frame(width: 48)
+                .tint(usage.fraction > 0.9 ? .orange : Color.accentColor)
+            Text("\(compactTokens(usage.promptTokens)) / \(compactTokens(usage.maximumTokens))")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(usage.fraction > 0.9 ? .orange : .secondary)
+        }
+        .help("Prompt context: \(usage.promptTokens) tokens. About \(usage.remainingTokens) tokens remain for the response.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context usage")
+        .accessibilityValue("\(usage.promptTokens) of \(usage.maximumTokens) tokens")
+    }
+
+    private func compactTokens(_ value: Int) -> String {
+        value >= 1_024
+            ? String(format: "%.1fK", Double(value) / 1_024)
+            : "\(value)"
+    }
+
+    private var shortcutHint: String {
+        switch model.newlineShortcut {
+        case .return: "⌘↩ to send"
+        case .shiftReturn: "↩ to send"
+        }
+    }
+
+    private var contextEstimationKey: Int {
+        var hasher = Hasher()
+        hasher.combine(model.selectedChatID)
+        hasher.combine(model.maxContextTokens)
+        hasher.combine(model.promptText)
+        for message in model.selectedChat.messages {
+            hasher.combine(message.id)
+            hasher.combine(message.content)
+        }
+        for attachment in model.promptAttachments {
+            hasher.combine(attachment.id)
+            hasher.combine(attachment.characterCount)
+        }
+        return hasher.finalize()
     }
 }
 
@@ -724,4 +804,50 @@ private final class ReceivedPromises: @unchecked Sendable {
 private enum DocumentImportOutcome: Sendable {
     case success(ExtractedPromptDocument)
     case failure(fileName: String, message: String)
+}
+
+private struct AttachmentPreviewSheet: View {
+    let attachment: AppPromptAttachment
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(attachment.fileName)
+                        .font(.title3.weight(.semibold))
+                    Text("Extracted locally · approximately \(attachment.approximateTokenCount.formatted()) tokens")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            if attachment.wasTruncatedDuringExtraction {
+                Label("The extracted text was truncated.", systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+            ScrollView {
+                Text(previewText)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 10))
+        }
+        .padding(20)
+        .frame(minWidth: 620, minHeight: 440)
+    }
+
+    private var previewText: String {
+        let maximumPreviewCharacters = 50_000
+        let prefix = String(attachment.extractedText.prefix(maximumPreviewCharacters))
+        if prefix.count < attachment.extractedText.count {
+            return prefix + "\n\n[Preview shortened; the full extracted text remains attached.]"
+        }
+        return prefix
+    }
 }

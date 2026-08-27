@@ -14,10 +14,13 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var topPEnabled: Bool = true
     var topP: Double = 0.95
     var prefillEnabled: Bool = true
+    var prefillChunkTokens: Int = 128
+    var expertCachePolicy: AppExpertCachePolicy = .lfu
+    var rdadvisePolicy: AppRDAdvicePolicy = .off
+    var modelVerification: AppModelVerification = .fullSha256
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
     var visionResidencyPolicy: VisionResidencyPolicy = .onDemand
-    var rdadvisePolicy: AppRDAdvicePolicy = .off
     var loadModelOnLaunch: Bool = false
 
     private enum CodingKeys: String, CodingKey {
@@ -30,10 +33,13 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case topPEnabled
         case topP
         case prefillEnabled
+        case prefillChunkTokens
+        case expertCachePolicy
+        case rdadvisePolicy
+        case modelVerification
         case newlineShortcut
         case showPromptExamples
         case visionResidencyPolicy
-        case rdadvisePolicy
         case loadModelOnLaunch
     }
 
@@ -46,10 +52,13 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          topPEnabled: Bool = true,
          topP: Double = 0.95,
          prefillEnabled: Bool = true,
+         prefillChunkTokens: Int = 128,
+         expertCachePolicy: AppExpertCachePolicy = .lfu,
+         rdadvisePolicy: AppRDAdvicePolicy = .off,
+         modelVerification: AppModelVerification = .fullSha256,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
          visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
-         rdadvisePolicy: AppRDAdvicePolicy = .off,
          loadModelOnLaunch: Bool = false) {
         self.version = version
         self.contextTokens = contextTokens
@@ -60,10 +69,13 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.topPEnabled = topPEnabled
         self.topP = topP
         self.prefillEnabled = prefillEnabled
+        self.prefillChunkTokens = prefillChunkTokens
+        self.expertCachePolicy = expertCachePolicy
+        self.rdadvisePolicy = rdadvisePolicy
+        self.modelVerification = modelVerification
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
         self.visionResidencyPolicy = visionResidencyPolicy
-        self.rdadvisePolicy = rdadvisePolicy
         self.loadModelOnLaunch = loadModelOnLaunch
     }
 
@@ -78,6 +90,18 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         topPEnabled = try container.decode(Bool.self, forKey: .topPEnabled)
         topP = try container.decode(Double.self, forKey: .topP)
         prefillEnabled = try container.decode(Bool.self, forKey: .prefillEnabled)
+        prefillChunkTokens = try container.decodeIfPresent(
+            Int.self,
+            forKey: .prefillChunkTokens) ?? 128
+        expertCachePolicy = try container.decodeIfPresent(
+            AppExpertCachePolicy.self,
+            forKey: .expertCachePolicy) ?? .lfu
+        rdadvisePolicy = try container.decodeIfPresent(
+            AppRDAdvicePolicy.self,
+            forKey: .rdadvisePolicy) ?? .off
+        modelVerification = try container.decodeIfPresent(
+            AppModelVerification.self,
+            forKey: .modelVerification) ?? .fullSha256
         newlineShortcut = try container.decodeIfPresent(
             AppNewlineShortcut.self,
             forKey: .newlineShortcut) ?? .return
@@ -87,9 +111,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         visionResidencyPolicy = try container.decodeIfPresent(
             VisionResidencyPolicy.self,
             forKey: .visionResidencyPolicy) ?? .onDemand
-        rdadvisePolicy = try container.decodeIfPresent(
-            AppRDAdvicePolicy.self,
-            forKey: .rdadvisePolicy) ?? .off
         loadModelOnLaunch = try container.decodeIfPresent(
             Bool.self,
             forKey: .loadModelOnLaunch) ?? false
@@ -101,6 +122,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
             && temperature.isFinite && (0...2).contains(temperature)
             && (1...256).contains(topK)
             && topP.isFinite && (0.01...1).contains(topP)
+            && AppRuntimeOptions.allowedPrefillChunkTokens.contains(prefillChunkTokens)
     }
 }
 

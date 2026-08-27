@@ -349,6 +349,91 @@ import Testing
     }
 
     @MainActor
+    @Test func responseStylePresetsKeepBalancedProductionDefaults() {
+        let model = AppModel()
+        #expect(model.responseStyle == .balanced)
+
+        model.applyResponseStyle(.precise)
+        #expect(model.responseStyle == .precise)
+        #expect(model.temperature == 0)
+        #expect(!model.topKEnabled)
+        #expect(!model.topPEnabled)
+
+        model.applyResponseStyle(.creative)
+        #expect(model.responseStyle == .creative)
+        #expect(model.temperature == 0.8)
+
+        model.applyResponseStyle(.balanced)
+        #expect(model.temperature == 0.2)
+        #expect(model.topK == 64)
+        #expect(model.topP == 0.95)
+    }
+
+    @MainActor
+    @Test func clearedHistoryCanBeUndoneWithoutLosingCurrentDraft() async {
+        let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = readyModel(client: client)
+        model.promptText = "question"
+        model.maxNewTokensOverride = 1
+        model.run()
+        await waitForIdle(model)
+        model.promptText = "next draft"
+
+        model.clearOutput()
+        #expect(model.canUndoClearHistory)
+        #expect(model.selectedChat.messages.isEmpty)
+        model.toggleChatPinned(id: model.selectedChatID)
+        let dueAt = Date(timeIntervalSince1970: 1_700_000_000)
+        model.setChatTask(
+            id: model.selectedChatID,
+            status: .inProgress,
+            dueAt: dueAt)
+        model.undoClearHistory()
+
+        #expect(model.selectedChat.messages.map(\.content) == ["question", "answer"])
+        #expect(model.promptText == "next draft")
+        #expect(model.selectedChat.isPinned)
+        #expect(model.selectedChat.taskStatus == .inProgress)
+        #expect(model.selectedChat.taskDueAt == dueAt)
+        #expect(!model.canUndoClearHistory)
+    }
+
+    @MainActor
+    @Test func userCanBrowseAndDraftInAnotherChatDuringDecode() async throws {
+        let client = MockInferenceClient(
+            response: "one two three four five",
+            tokenDelayNanos: 20_000_000)
+        client.prefillSteps = 0
+        let model = readyModel(client: client)
+        let sourceID = model.selectedChatID
+        model.promptText = "long answer"
+        model.maxNewTokensOverride = 8
+        model.run()
+
+        for _ in 0..<200 where model.activeRunChatID == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(model.activeRunChatID == sourceID)
+
+        let otherID = model.createChat()
+        #expect(otherID != sourceID)
+        #expect(model.selectedChatID == otherID)
+        model.promptText = "draft while busy"
+        #expect(model.isRunning)
+        #expect(model.activeRunChatID == sourceID)
+
+        await waitForIdle(model)
+        #expect(model.selectedChatID == otherID)
+        #expect(model.promptText == "draft while busy")
+        #expect(model.selectedChat.messages.isEmpty)
+
+        model.selectChat(id: sourceID)
+        #expect(model.selectedChat.messages.first?.content == "long answer")
+        #expect(model.selectedChat.messages.last?.role == .assistant)
+    }
+
+    @MainActor
     @Test func changingModelPathInvalidatesLoadedStateAndDiagnostics() {
         let model = AppModel(client: MockInferenceClient(),
                              installer: MockModelInstallerClient())

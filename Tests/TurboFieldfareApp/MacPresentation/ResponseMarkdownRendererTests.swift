@@ -1113,6 +1113,32 @@ import Testing
             with: result.assistantRange) == "Second answer")
     }
 
+    @Test func editedAssistantMessagesAndCurrentResponseAreMarked() {
+        let storage = NSMutableAttributedString()
+        let controller = InstructionTranscriptDocumentController()
+        let history = [
+            InstructionTranscriptMessage(role: .user, content: "Question"),
+            InstructionTranscriptMessage(
+                role: .assistant,
+                content: "Earlier manual answer",
+                isEdited: true),
+            InstructionTranscriptMessage(role: .user, content: "Follow-up"),
+        ]
+
+        _ = controller.synchronize(
+            storage: storage,
+            history: history,
+            response: "Current manual answer",
+            isTerminal: true,
+            isResponseEdited: true)
+
+        #expect(storage.string.contains(
+            "Answer (edited)\nEarlier manual answer"))
+        #expect(storage.string.hasSuffix(
+            "Answer (edited)\nCurrent manual answer"))
+        #expect(controller.isResponseEdited)
+    }
+
     @Test func switchingChatHistoryRebuildsWithoutLeakingPriorTurns() {
         let storage = NSMutableAttributedString()
         let controller = InstructionTranscriptDocumentController()

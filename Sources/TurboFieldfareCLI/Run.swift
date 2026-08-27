@@ -61,6 +61,7 @@ public func run(args: Args,
             try VisionRuntime.requireSupportedDevice(device)
             selectedDevice = device
         }
+        reportProgress(args, stderr, "Preparing tokenizer")
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         var promptIds: [Int32]
         var multimodalMessages: [MultimodalMessage]?
@@ -106,7 +107,6 @@ public func run(args: Args,
         guard let device = selectedDevice ?? MetalContext.makeSystemDefaultDevice() else {
             return errored(stderr, "no Metal device", 1)
         }
-
         var effectiveArgs = args
         if args.prefillChunkTokensAuto {
             let promptTokens = try estimatedPromptTokens(
@@ -174,6 +174,7 @@ public func run(args: Args,
             }
         }
 
+        reportProgress(args, stderr, "Loading model from \(modelURL.path)")
         let context = try MetalContext()
         let model = try Model.load(
             directoryURL: modelURL,
@@ -188,6 +189,7 @@ public func run(args: Args,
             runtimeConfiguration: runtime)
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize)
+        var lastReportedPrefill = 0
         let multimodalInput: MultimodalPrefillInput?
         if let multimodalMessages {
             let vision = try VisionRuntime.open(
@@ -249,8 +251,14 @@ public func run(args: Args,
             scratch: scratch,
             prefillConfig: runtime.prefillConfig) { progress in
                 switch progress {
-                case .prefill:
-                    break
+                case .prefill(let done, let total):
+                    guard args.progress,
+                          done == total || done - lastReportedPrefill >= 128 else {
+                        break
+                    }
+                    lastReportedPrefill = done
+                    let suffix = done == total ? "\n" : "\r"
+                    stderr.write(Data("Prefill \(done)/\(total)\(suffix)".utf8))
                 case .token(_, _, let delta):
                     if !delta.isEmpty { stdout.write(Data(delta.utf8)) }
                 case .tail(let tail):
@@ -262,7 +270,23 @@ public func run(args: Args,
             let tokensPerSecond = stats.decodeSeconds > 0
                 ? Double(stats.newTokens) / stats.decodeSeconds
                 : 0
-            let footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
+            let footer: String
+            if args.metricsJSON {
+                let object: [String: Any] = [
+                    "stop": String(describing: stats.reason),
+                    "prompt_tokens": stats.prefillTokens,
+                    "completion_tokens": stats.newTokens,
+                    "prefill_seconds": stats.prefillSeconds,
+                    "decode_seconds": stats.decodeSeconds,
+                    "tokens_per_second": tokensPerSecond,
+                ]
+                let data = try JSONSerialization.data(
+                    withJSONObject: object,
+                    options: [.sortedKeys])
+                footer = "\n" + String(decoding: data, as: UTF8.self) + "\n"
+            } else {
+                footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
+            }
             stderr.write(Data(footer.utf8))
         }
         return RunResult(exitCode: 0)
@@ -279,7 +303,6 @@ public func run(args: Args,
         return errored(stderr, "\(error)", 1)
     }
 }
-
 
 /// The order the messages reference their images, so a repeated command plans
 /// and encodes them the same way every run.
@@ -447,6 +470,13 @@ func validatePromptSize(
             2)
     }
     return nil
+}
+
+private func reportProgress(_ args: Args,
+                            _ stderr: FileHandle,
+                            _ message: String) {
+    guard args.progress else { return }
+    stderr.write(Data("\(message)…\n".utf8))
 }
 
 private func errored(_ stderr: FileHandle, _ message: String, _ code: Int32) -> RunResult {

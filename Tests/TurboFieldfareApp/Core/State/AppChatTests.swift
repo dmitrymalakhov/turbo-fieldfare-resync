@@ -63,6 +63,21 @@ import Testing
         #expect(AppChatArchive(
             selectedChatID: validSummaryChat.id,
             chats: [validSummaryChat]).isValid)
+        #expect(!AppChatArchive(
+            selectedChatID: first.id,
+            chats: [
+                AppChat(
+                    id: first.id,
+                    messages: [message],
+                    editedAssistantMessageIDs: [UUID()]),
+            ]).isValid)
+        #expect(!AppChatArchive(
+            selectedChatID: first.id,
+            chats: [
+                AppChat(
+                    id: first.id,
+                    taskDueAt: Date()),
+            ]).isValid)
     }
 
     @Test func invalidArchiveCannotBePersisted() throws {
@@ -162,6 +177,341 @@ import Testing
         model.selectChat(id: UUID())
         model.deleteChat(id: UUID())
         #expect(model.selectedChatID == selectionBeforeUnknown)
+    }
+
+    @MainActor
+    @Test func pinnedChatsStayAboveMoreRecentChatsAndCanBeUnpinned() {
+        let model = AppModel()
+        let firstID = model.selectedChatID
+        model.renameChat(id: firstID, title: "Important")
+        let secondID = model.createChat()
+        model.renameChat(id: secondID, title: "Recent")
+
+        #expect(model.sidebarChats.map(\.id) == [secondID, firstID])
+
+        model.toggleChatPinned(id: firstID)
+        #expect(model.chats.first(where: { $0.id == firstID })?.isPinned == true)
+        #expect(model.sidebarChats.map(\.id) == [firstID, secondID])
+
+        model.toggleChatPinned(id: firstID)
+        model.toggleChatPinned(id: UUID())
+        #expect(model.chats.first(where: { $0.id == firstID })?.isPinned == false)
+        #expect(model.sidebarChats.map(\.id) == [secondID, firstID])
+    }
+
+    @Test func taskBucketsSeparateDueWorkFromCompletedWork() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_700_049_600)
+
+        #expect(AppChat().taskBucket(now: now, calendar: calendar) == nil)
+        #expect(AppChat(taskStatus: .planned).taskBucket(
+            now: now,
+            calendar: calendar) == .noDueDate)
+        #expect(AppChat(
+            taskStatus: .planned,
+            taskDueAt: calendar.date(byAdding: .day, value: -1, to: now))
+            .taskBucket(now: now, calendar: calendar) == .overdue)
+        #expect(AppChat(
+            taskStatus: .inProgress,
+            taskDueAt: calendar.date(byAdding: .hour, value: 2, to: now))
+            .taskBucket(now: now, calendar: calendar) == .today)
+        #expect(AppChat(
+            taskStatus: .planned,
+            taskDueAt: calendar.date(byAdding: .day, value: 1, to: now))
+            .taskBucket(now: now, calendar: calendar) == .upcoming)
+        #expect(AppChat(
+            taskStatus: .done,
+            taskDueAt: calendar.date(byAdding: .day, value: -1, to: now))
+            .taskBucket(now: now, calendar: calendar) == .completed)
+    }
+
+    @MainActor
+    @Test func chatTasksCanBeScheduledSortedCompletedAndRemoved() {
+        let model = AppModel()
+        let laterID = model.selectedChatID
+        let earlierID = model.createChat()
+        let unscheduledID = model.createChat()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+        model.setChatTask(
+            id: laterID,
+            status: .planned,
+            dueAt: base.addingTimeInterval(7_200))
+        model.setChatTask(
+            id: earlierID,
+            status: .inProgress,
+            dueAt: base.addingTimeInterval(3_600))
+        model.setChatTask(
+            id: unscheduledID,
+            status: .planned,
+            dueAt: nil)
+
+        #expect(model.taskChats.map(\.id)
+            == [earlierID, laterID, unscheduledID])
+
+        model.setChatTask(
+            id: earlierID,
+            status: .done,
+            dueAt: base.addingTimeInterval(3_600))
+        #expect(model.taskChats.map(\.id)
+            == [laterID, unscheduledID, earlierID])
+
+        model.clearChatTask(id: laterID)
+        model.clearChatTask(id: UUID())
+        #expect(!model.chats.first(where: { $0.id == laterID })!.isTask)
+        #expect(model.chats.first(where: { $0.id == laterID })?.taskDueAt == nil)
+        #expect(model.taskChats.map(\.id) == [unscheduledID, earlierID])
+    }
+
+    @MainActor
+    @Test func scheduledTaskCanBeCreatedDirectlyWithItsOwnChat() {
+        let model = AppModel()
+        let originalID = model.selectedChatID
+        let dueAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let taskID = model.createTaskChat(
+            title: "  Prepare release notes  ",
+            status: .inProgress,
+            dueAt: dueAt)
+
+        #expect(taskID != originalID)
+        #expect(model.selectedChatID == taskID)
+        #expect(model.selectedChat.title == "Prepare release notes")
+        #expect(model.selectedChat.taskStatus == .inProgress)
+        #expect(model.selectedChat.taskDueAt == dueAt)
+        #expect(model.selectedChat.messages.isEmpty)
+        #expect(model.taskChats.map(\.id) == [taskID])
+
+        let fallbackID = model.createTaskChat(
+            title: " \n ",
+            status: .planned,
+            dueAt: nil)
+        #expect(model.selectedChatID == fallbackID)
+        #expect(model.selectedChat.title == "New task")
+    }
+
+    @MainActor
+    @Test func branchingChatCopiesContextWithFreshIdentity() async {
+        let client = MockInferenceClient(response: "first answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = AppModel(client: client)
+        let directory = FileManager.default.temporaryDirectory
+        model.modelPathText = directory.path
+        model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
+        model.maxNewTokensOverride = 2
+        model.promptText = "first question"
+        model.run()
+        await waitForIdle(model)
+        model.toggleChatPinned(id: model.selectedChatID)
+        model.setChatTask(
+            id: model.selectedChatID,
+            status: .inProgress,
+            dueAt: Date(timeIntervalSince1970: 1_700_000_000))
+
+        let source = model.selectedChat
+        let branchID = model.branchChat(from: source.id)
+        let branch = model.selectedChat
+
+        #expect(branchID != source.id)
+        #expect(branch.branchedFromChatID == source.id)
+        #expect(branch.branchedFromMessageID == source.messages.last?.id)
+        #expect(branch.branchKind == .chatCopy)
+        #expect(branch.messages.map(\.content) == source.messages.map(\.content))
+        #expect(branch.messages.map(\.id) != source.messages.map(\.id))
+        #expect(source.isPinned)
+        #expect(!branch.isPinned)
+        #expect(source.isTask)
+        #expect(!branch.isTask)
+        #expect(branch.draft.isEmpty)
+        #expect(branch.draftAttachments.isEmpty)
+        #expect(model.chats.contains(where: { $0.id == source.id }))
+        #expect(model.branchSourceChat(for: branch.id)?.id == source.id)
+        #expect(model.branchSourceMessage(for: branch.id)?.id
+            == source.messages.last?.id)
+
+        model.selectBranchSource(of: branch.id)
+        #expect(model.selectedChatID == source.id)
+        model.selectChat(id: branch.id)
+
+        model.promptText = "follow-up in branch"
+        let request = try? model.makeRequest()
+        #expect(request?.messages.map(\.content)
+            == ["first question", "first answer", "follow-up in branch"])
+    }
+
+    @MainActor
+    @Test func branchingFromMessageStartsAtThatExactConversationPoint() async {
+        let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = AppModel(client: client)
+        let directory = FileManager.default.temporaryDirectory
+        model.modelPathText = directory.path
+        model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
+        model.maxNewTokensOverride = 1
+
+        model.promptText = "first question"
+        model.run()
+        await waitForIdle(model)
+        model.promptText = "second question"
+        model.run()
+        await waitForIdle(model)
+
+        let source = model.selectedChat
+        let secondUser = source.messages[2]
+        let userBranchID = model.branchChat(
+            from: source.id,
+            throughMessage: secondUser.id)
+
+        #expect(userBranchID != nil)
+        #expect(model.selectedChat.messages.map(\.content)
+            == ["first question", "answer"])
+        #expect(model.promptText == "second question")
+        #expect(model.selectedChat.branchKind == .messageContinuation)
+        let userBranchRequest = try? model.makeRequest()
+        #expect(userBranchRequest?.messages.map(\.content)
+            == ["first question", "answer", "second question"])
+
+        let firstAssistant = source.messages[1]
+        let assistantBranchID = model.branchChat(
+            from: source.id,
+            throughMessage: firstAssistant.id)
+
+        #expect(assistantBranchID != nil)
+        #expect(model.selectedChat.messages.map(\.content)
+            == ["first question", "answer"])
+        #expect(model.promptText.isEmpty)
+    }
+
+    @MainActor
+    @Test func branchingFromAttachedUserMessageKeepsItsHiddenDocumentContext() async {
+        let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = AppModel(client: client)
+        let directory = FileManager.default.temporaryDirectory
+        model.modelPathText = directory.path
+        model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
+        model.maxNewTokensOverride = 1
+        model.promptText = "summarize"
+        model.addPromptAttachment(AppPromptAttachment(
+            fileName: "notes.pdf",
+            formatLabel: "PDF",
+            extractedText: "PRIVATE-DOCUMENT-CONTEXT"))
+        model.run()
+        await waitForIdle(model)
+
+        let source = model.selectedChat
+        let user = source.messages[0]
+        _ = model.branchChat(from: source.id, throughMessage: user.id)
+
+        #expect(model.selectedChat.messages.isEmpty)
+        #expect(model.selectedChat.draftContextContent == user.contextContent)
+        let preservedRequest = try? model.makeRequest()
+        #expect(preservedRequest?.messages.last?.content.contains(
+            "PRIVATE-DOCUMENT-CONTEXT") == true)
+
+        model.promptText += " updated"
+        #expect(model.selectedChat.draftContextContent == nil)
+        let editedRequest = try? model.makeRequest()
+        #expect(editedRequest?.messages.last?.content.contains(
+            "PRIVATE-DOCUMENT-CONTEXT") == false)
+
+        model.selectChat(id: source.id)
+        _ = model.branchChat(
+            from: source.id,
+            editingMessage: user.id,
+            replacementContent: "rewrite the summary")
+        let editedDocumentRequest = try? model.makeRequest()
+        #expect(editedDocumentRequest?.messages.last?.content.contains(
+            "PRIVATE-DOCUMENT-CONTEXT") == true)
+        #expect(editedDocumentRequest?.messages.last?.content.hasSuffix(
+            "User request:\nrewrite the summary") == true)
+    }
+
+    @MainActor
+    @Test func editingUserMessageBranchesFromItsPreviousContext() async {
+        let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = AppModel(client: client)
+        let directory = FileManager.default.temporaryDirectory
+        model.modelPathText = directory.path
+        model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
+        model.maxNewTokensOverride = 1
+
+        model.promptText = "first question"
+        model.run()
+        await waitForIdle(model)
+        model.promptText = "old follow-up"
+        model.run()
+        await waitForIdle(model)
+
+        let source = model.selectedChat
+        let editedMessage = source.messages[2]
+        let branchID = model.branchChat(
+            from: source.id,
+            editingMessage: editedMessage.id,
+            replacementContent: "  new follow-up  ")
+
+        #expect(branchID != nil)
+        #expect(model.selectedChatID == branchID)
+        #expect(model.selectedChat.messages.map(\.content)
+            == ["first question", "answer"])
+        #expect(model.promptText == "new follow-up")
+        #expect(model.selectedChat.branchedFromChatID == source.id)
+        #expect(model.selectedChat.branchedFromMessageID == editedMessage.id)
+        #expect(model.selectedChat.branchKind == .editedUserMessage)
+        #expect(model.chats.first(where: { $0.id == source.id })?.messages == source.messages)
+
+        let request = try? model.makeRequest()
+        #expect(request?.messages.map(\.content)
+            == ["first question", "answer", "new follow-up"])
+    }
+
+    @MainActor
+    @Test func editingAssistantMessageKeepsEditedAnswerAsBranchContext() async {
+        let client = MockInferenceClient(response: "old answer", tokenDelayNanos: 1)
+        client.prefillSteps = 0
+        let model = AppModel(client: client)
+        let directory = FileManager.default.temporaryDirectory
+        model.modelPathText = directory.path
+        model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
+        model.maxNewTokensOverride = 2
+        model.promptText = "question"
+        model.run()
+        await waitForIdle(model)
+
+        let source = model.selectedChat
+        let assistant = source.messages[1]
+        _ = model.branchChat(
+            from: source.id,
+            editingMessage: assistant.id,
+            replacementContent: "corrected answer")
+
+        #expect(model.selectedChat.messages.map(\.content)
+            == ["question", "corrected answer"])
+        #expect(model.selectedChat.messages.last?.contextContent == "corrected answer")
+        #expect(model.selectedChat.branchKind == .editedAssistantMessage)
+        #expect(model.selectedChat.editedAssistantMessageIDs
+            == [model.selectedChat.messages[1].id])
+        #expect(model.promptText.isEmpty)
+        #expect(model.chats.first(where: { $0.id == source.id })?.messages == source.messages)
+    }
+
+    @MainActor
+    @Test func invalidBranchRequestsLeaveChatSelectionUnchanged() {
+        let model = AppModel()
+        let selectedID = model.selectedChatID
+
+        #expect(model.branchChat(from: UUID()) == selectedID)
+        #expect(model.branchChat(
+            from: selectedID,
+            editingMessage: UUID(),
+            replacementContent: "replacement") == nil)
+        #expect(model.branchChat(
+            from: selectedID,
+            throughMessage: UUID()) == nil)
+        #expect(model.selectedChatID == selectedID)
+        #expect(model.chats.count == 1)
     }
 
     @MainActor
@@ -279,21 +629,27 @@ import Testing
             .appendingPathComponent("AppChatTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let modelDirectory = root.appendingPathComponent("model.gturbo", isDirectory: true)
+        let user = AppChatMessage(
+            role: .user,
+            content: "Summarize report.pdf",
+            contextContent: "Document text\n\nSummarize it")
+        let assistant = AppChatMessage(role: .assistant, content: "Summary")
         let chat = AppChat(
             title: "Research",
-            messages: [
-                AppChatMessage(
-                    role: .user,
-                    content: "Summarize report.pdf",
-                    contextContent: "Document text\n\nSummarize it"),
-                AppChatMessage(role: .assistant, content: "Summary"),
-            ],
+            messages: [user, assistant],
             draftAttachments: [
                 AppPromptAttachment(
                     fileName: "table.xlsx",
                     formatLabel: "Excel",
                     extractedText: "A1: Revenue"),
-            ])
+            ],
+            branchedFromChatID: UUID(),
+            branchedFromMessageID: user.id,
+            branchKind: .editedAssistantMessage,
+            editedAssistantMessageIDs: [assistant.id],
+            pinnedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            taskStatus: .inProgress,
+            taskDueAt: Date(timeIntervalSince1970: 1_700_086_400))
         let archive = AppChatArchive(selectedChatID: chat.id, chats: [chat])
 
         try AppChatFileStore.save(archive, forModelDirectory: modelDirectory)
@@ -354,6 +710,12 @@ import Testing
         #expect(loaded.selectedChatID == chatID)
         #expect(loaded.chats.first?.contextSummary == nil)
         #expect(loaded.chats.first?.summarizedThroughMessageID == nil)
+        #expect(loaded.chats.first?.draftContextContent == nil)
+        #expect(loaded.chats.first?.branchKind == nil)
+        #expect(loaded.chats.first?.editedAssistantMessageIDs == nil)
+        #expect(loaded.chats.first?.pinnedAt == nil)
+        #expect(loaded.chats.first?.taskStatus == nil)
+        #expect(loaded.chats.first?.taskDueAt == nil)
     }
 
     @Test func corruptArchiveIsQuarantinedInsteadOfDeleted() throws {
@@ -435,8 +797,9 @@ import Testing
             settingsPersistenceEnabled: true)
         let firstChatID = model.selectedChatID
         model.promptText = "first draft"
-        let secondChatID = model.createChat()
-        model.promptText = "second draft"
+        model.toggleChatPinned(id: firstChatID)
+        let branchID = model.branchChat(from: firstChatID)
+        model.promptText = "branch draft"
         model.flushChatPersistence()
 
         let restored = AppModel(
@@ -444,10 +807,16 @@ import Testing
             settingsPersistenceEnabled: true)
 
         #expect(restored.chats.count == 2)
-        #expect(restored.selectedChatID == secondChatID)
-        #expect(restored.promptText == "second draft")
-        restored.selectChat(id: firstChatID)
+        #expect(restored.selectedChatID == branchID)
+        #expect(restored.promptText == "branch draft")
+        #expect(restored.selectedChat.branchedFromChatID == firstChatID)
+        #expect(restored.selectedChat.branchKind == .chatCopy)
+        #expect(!restored.selectedChat.isPinned)
+        #expect(restored.sidebarChats.first?.id == firstChatID)
+        restored.selectBranchSource(of: branchID)
+        #expect(restored.selectedChatID == firstChatID)
         #expect(restored.promptText == "first draft")
+        #expect(restored.selectedChat.isPinned)
         restored.flushChatPersistence()
     }
 
@@ -690,6 +1059,29 @@ import Testing
             "gamma constraint") == true)
 
         let compressedChatID = model.selectedChatID
+        let compressedChat = model.selectedChat
+        let originalBoundaryID = compressedChat.summarizedThroughMessageID
+        let branchID = model.branchChat(from: compressedChatID)
+        #expect(branchID != compressedChatID)
+        #expect(model.selectedChat.contextSummary
+            == "compressed conversation memory")
+        #expect(model.selectedChat.summarizedThroughMessageID != nil)
+        #expect(model.selectedChat.summarizedThroughMessageID
+            != originalBoundaryID)
+        #expect(model.selectedChat.messages.contains {
+            $0.id == model.selectedChat.summarizedThroughMessageID
+        })
+
+        model.selectChat(id: compressedChatID)
+        if let firstUserID = compressedChat.messages.first?.id {
+            _ = model.branchChat(
+                from: compressedChatID,
+                throughMessage: firstUserID)
+            #expect(model.selectedChat.contextSummary == nil)
+            #expect(model.selectedChat.summarizedThroughMessageID == nil)
+        }
+
+        model.selectChat(id: compressedChatID)
         let freshChatID = model.createChat()
         model.promptText = "fresh context"
         let freshRequest = try? model.makeRequest()

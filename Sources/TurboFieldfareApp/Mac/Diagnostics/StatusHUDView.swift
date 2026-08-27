@@ -244,6 +244,10 @@ private struct PhaseLabel: View {
     private var content: Content {
         let presentation = model.presentation
         if presentation.showsActivity { return .loading(presentation.label) }
+        if model.isRunning, !model.isSelectedChatRunning,
+           let title = model.activeRunChatTitle {
+            return .pulse("Generating in \(title)")
+        }
         if model.isRunning
             && (model.phase == .prefill || model.phase == .compressing) {
             return .pulse(presentation.label)
