@@ -140,10 +140,12 @@ Each message exposes contextual actions for copy, edit in a branch, continue
 from that point, or regenerate an assistant reply in a branch. Branches retain
 their source relationship without rewriting the original conversation. The
 response toolbar can export the latest answer as a paginated PDF or ask the
-same local model to turn it into a presentation draft in a separate chat
-branch. The conversation menu can also export the visible transcript as plain
-text. Clearing a chat requires confirmation and can be undone immediately
-afterward.
+same local model to turn it into a presentation in a separate chat branch. Once
+the slide draft is complete, the app automatically offers to save a standard,
+editable `.pptx` file. Existing slide-formatted answers can also be exported to
+PowerPoint manually from the response menu. The conversation menu can export
+the visible transcript as plain text. Clearing a chat requires confirmation and
+can be undone immediately afterward.
 
 The composer can extract text locally from plain-text files, PDF, DOCX, PPTX,
 and XLSX files and include it with the next message. Files are not uploaded to

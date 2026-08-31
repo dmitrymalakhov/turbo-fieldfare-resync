@@ -120,6 +120,7 @@ public final class AppModel {
     /// scrolling only when the reader was already at the bottom left them
     /// looking at their own attachments while the model worked.
     public private(set) var runIdentity: Int = 0
+    public private(set) var presentationExportRequest: AppPresentationExportRequest?
 
     private let client: any AppInferenceClient
     private let installer: any AppModelInstallerClient
@@ -147,6 +148,7 @@ public final class AppModel {
     public private(set) var activeRunChatID: AppChat.ID?
     private var displayedAssistantMessageID: AppChatMessage.ID?
     private var pendingSubmissionAfterLoad = false
+    private var pendingPresentationExportChatID: AppChat.ID?
     private var clearedPromptSnapshot: AppClearedPromptSnapshot?
     private var clearedChatSnapshot: AppChat?
     private var hasHandledTerminalEvent = false
@@ -748,6 +750,8 @@ public final class AppModel {
         activeRunRuntimeKey = nil
         activeRunChatID = nil
         pendingSubmissionAfterLoad = false
+        pendingPresentationExportChatID = nil
+        presentationExportRequest = nil
         clearedChatSnapshot = nil
         loadedRuntimeKey = nil
         loadState = .notLoaded
@@ -806,9 +810,16 @@ public final class AppModel {
 
         chats[branchIndex].title = AppPresentationPreparation.title(
             from: sourceTitle)
+        presentationExportRequest = nil
+        pendingPresentationExportChatID = branchID
         promptText = AppPresentationPreparation.prompt
         submitPrompt()
         return branchID
+    }
+
+    public func consumePresentationExportRequest(id: UUID) {
+        guard presentationExportRequest?.id == id else { return }
+        presentationExportRequest = nil
     }
 
     public func perform(_ action: AppModelAction) {
@@ -2033,6 +2044,7 @@ public final class AppModel {
             serviceEpoch = nil
             archiveConversationContext()
             pendingSubmissionAfterLoad = false
+            pendingPresentationExportChatID = nil
         case .loading, .cancelling, .unloading:
             break
         case .ready(_, let seconds):
@@ -2062,6 +2074,7 @@ public final class AppModel {
         case .failed(let loadError):
             pendingExplicitLoadRuntimeKey = nil
             pendingSubmissionAfterLoad = false
+            pendingPresentationExportChatID = nil
             error = loadError
         }
     }
@@ -3271,6 +3284,7 @@ public final class AppModel {
     private func finishTerminalRun() {
         let completedChatID = activeRunChatID
         appendAssistantMessageIfNeeded()
+        finishPresentationExportIfNeeded(completedChatID: completedChatID)
         phase = .idle
         runState = .idle
         isCancellationPending = false
@@ -3284,6 +3298,32 @@ public final class AppModel {
             diagnostics = completedDiagnostics
             error = completedError
         }
+    }
+
+    private func finishPresentationExportIfNeeded(
+        completedChatID: AppChat.ID?
+    ) {
+        guard let pendingChatID = pendingPresentationExportChatID else { return }
+        if completedChatID == nil {
+            if selectedChatID == pendingChatID {
+                pendingPresentationExportChatID = nil
+            }
+            return
+        }
+        guard completedChatID == pendingChatID else { return }
+        defer { pendingPresentationExportChatID = nil }
+        guard error == nil,
+              let chat = chats.first(where: { $0.id == pendingChatID }),
+              let answer = chat.messages.last,
+              answer.role == .assistant,
+              !answer.content.trimmingCharacters(
+                in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        presentationExportRequest = AppPresentationExportRequest(
+            chatID: pendingChatID,
+            title: chat.title,
+            markdown: answer.content)
     }
 
     private func appendUserMessage(

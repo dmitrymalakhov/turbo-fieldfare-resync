@@ -42,6 +42,13 @@ struct OutputPaneView: View {
             ConversationMemorySheet(
                 memory: model.selectedChat.contextSummary ?? "")
         }
+        .onChange(of: model.presentationExportRequest) { _, request in
+            guard let request else { return }
+            exportPresentation(
+                title: request.title,
+                response: request.markdown)
+            model.consumePresentationExportRequest(id: request.id)
+        }
         .confirmationDialog(
             "Clear this chat's history?",
             isPresented: $showingClearConfirmation,
@@ -88,10 +95,14 @@ struct OutputPaneView: View {
                 .disabled(model.outputResponsePlainText.isEmpty
                           || model.isSelectedChatRunning)
 
-            Button("Prepare Presentation with Local Model") {
+            Button("Create PowerPoint with Local Model") {
                 model.preparePresentationFromResponse()
             }
             .disabled(!model.canPreparePresentationFromResponse)
+
+            Button("Export Response as PowerPoint…", action: exportResponsePPTX)
+                .disabled(model.outputResponsePlainText.isEmpty
+                          || model.isSelectedChatRunning)
 
             Button("Export Conversation…", action: exportConversation)
                 .disabled(model.outputConversationPlainText.isEmpty)
@@ -240,10 +251,12 @@ struct OutputPaneView: View {
         Menu {
             Button("Export Response as PDF…", action: exportResponsePDF)
                 .disabled(model.isSelectedChatRunning)
-            Button("Prepare Presentation with Local Model") {
+            Button("Create PowerPoint with Local Model") {
                 model.preparePresentationFromResponse()
             }
             .disabled(!model.canPreparePresentationFromResponse)
+            Button("Export Response as PowerPoint…", action: exportResponsePPTX)
+                .disabled(model.isSelectedChatRunning)
             Divider()
             Button("Export Conversation…", action: exportConversation)
         } label: {
@@ -260,7 +273,7 @@ struct OutputPaneView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Export this answer or prepare a presentation")
+        .help("Export this answer as PDF or PowerPoint")
         .accessibilityLabel("Response export options")
     }
 
@@ -528,6 +541,39 @@ struct OutputPaneView: View {
         } catch {
             model.error = .unknown("Response could not be exported as PDF: \(error.localizedDescription)")
         }
+    }
+
+    private func exportResponsePPTX() {
+        exportPresentation(
+            title: model.selectedChat.title,
+            response: model.outputResponsePlainText)
+    }
+
+    private func exportPresentation(title: String, response: String) {
+        let panel = NSSavePanel()
+        panel.title = "Export Response as PowerPoint"
+        panel.nameFieldStringValue = safeFileName(title) + ".pptx"
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "pptx") ?? .data,
+        ]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try ResponsePPTXExporter.makePPTX(
+                title: title,
+                response: response)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            model.error = .unknown(
+                "Response could not be exported as PowerPoint: \(error.localizedDescription)")
+        }
+    }
+
+    private func safeFileName(_ title: String) -> String {
+        let cleaned = title
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "presentation" : cleaned
     }
 }
 

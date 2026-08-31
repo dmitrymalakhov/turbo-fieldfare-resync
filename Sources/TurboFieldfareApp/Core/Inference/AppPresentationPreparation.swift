@@ -1,5 +1,24 @@
 import Foundation
 
+public struct AppPresentationExportRequest: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let chatID: AppChat.ID
+    public let title: String
+    public let markdown: String
+
+    public init(
+        id: UUID = UUID(),
+        chatID: AppChat.ID,
+        title: String,
+        markdown: String
+    ) {
+        self.id = id
+        self.chatID = chatID
+        self.title = title
+        self.markdown = markdown
+    }
+}
+
 public enum AppPresentationPreparation {
     public static let prompt = """
     Turn your immediately preceding answer into a presentation draft.
@@ -12,7 +31,14 @@ public enum AppPresentationPreparation {
     - Add one brief "Suggested visual" line only when a visual would materially improve the slide.
     - Add compact speaker notes after each slide.
     - Preserve the source facts and numbers. Do not invent missing evidence.
-    - Return only the presentation draft in Markdown, using "# Slide N - Title" headings.
+    - Return only the presentation draft in Markdown. Do not add an introduction or closing commentary outside the slides.
+
+    Use this exact structure for every slide:
+    # Slide N - Audience-facing title
+    - First concise bullet
+    - Second concise bullet
+    Suggested visual: A short optional visual description
+    Speaker notes: Compact notes for the presenter
     """
 
     public static func title(from sourceTitle: String) -> String {
