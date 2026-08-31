@@ -55,7 +55,7 @@ import Testing
         #expect(settings == MacAppSettings())
     }
 
-    @Test func legacySettingsDefaultToReturnWithoutLosingValues() throws {
+    @Test func legacySettingsDefaultWithoutLosingValues() throws {
         let data = Data("""
         {
           "version": 1,

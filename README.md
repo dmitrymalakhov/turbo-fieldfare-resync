@@ -147,6 +147,8 @@ include it with the next message. Files are not uploaded to a remote service.
 Files can be selected with the paperclip or dropped onto the composer, and
 extracted text can be previewed before sending. The composer reports estimated
 context use while you type so oversized prompts are visible before submission.
+The composer clears while a request is being prepared. If preparation fails
+or is cancelled, the unsent draft is restored.
 Select the context meter to see how recent messages, compressed memory, saved
 document text, current attachments, and the draft contribute to the next turn.
 The same panel can open the exact compressed memory, branch the conversation,

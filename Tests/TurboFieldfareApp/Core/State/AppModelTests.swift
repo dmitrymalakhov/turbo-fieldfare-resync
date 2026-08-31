@@ -220,7 +220,7 @@ import Testing
     }
 
     @MainActor
-    @Test func clearAfterSendingPreservesTranscriptAndNextDraft() async throws {
+    @Test func defaultClearAfterSendingPreservesTranscriptAndNextDraft() async throws {
         let client = MockInferenceClient(
             response: "answer",
             tokenDelayNanos: 20_000_000)

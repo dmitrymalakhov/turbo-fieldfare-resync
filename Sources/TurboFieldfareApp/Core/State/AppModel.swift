@@ -2,7 +2,6 @@ import Foundation
 import Synchronization
 import TurboFieldfare
 import TurboFieldfareRepackCore
-import TurboFieldfare
 import Observation
 
 private struct AppRequestContextBuild {
@@ -14,6 +13,12 @@ private struct AppHistoryCompressionPlan {
     var previousSummary: String?
     var sourceMessages: [AppChatMessage]
     var summarizedThroughMessageID: AppChatMessage.ID?
+}
+
+private struct AppClearedPromptSnapshot {
+    var chatID: AppChat.ID
+    var draft: String
+    var draftContextContent: String?
 }
 
 @MainActor
@@ -142,6 +147,7 @@ public final class AppModel {
     public private(set) var activeRunChatID: AppChat.ID?
     private var displayedAssistantMessageID: AppChatMessage.ID?
     private var pendingSubmissionAfterLoad = false
+    private var clearedPromptSnapshot: AppClearedPromptSnapshot?
     private var clearedChatSnapshot: AppChat?
     private var hasHandledTerminalEvent = false
     private let memorySampler: AppMemorySampler
@@ -2614,6 +2620,16 @@ public final class AppModel {
         sampleLiveMemory()
         phase = .prefill
         runState = .running
+        if let index = selectedChatIndex {
+            let snapshot = AppClearedPromptSnapshot(
+                chatID: chats[index].id,
+                draft: chats[index].draft,
+                draftContextContent: chats[index].draftContextContent)
+            promptText = ""
+            clearedPromptSnapshot = snapshot
+        } else {
+            clearedPromptSnapshot = nil
+        }
     }
 
     private func commitPreparedRequestAndLaunch(
@@ -2644,6 +2660,7 @@ public final class AppModel {
         for attachment in imageAttachments { attachmentStore.remove(attachment) }
         imageAttachments.removeAll()
         imageAttachmentError = nil
+        clearedPromptSnapshot = nil
     }
 
     private func launchGeneration(_ request: AppGenerationRequest) {
@@ -3083,9 +3100,23 @@ public final class AppModel {
         guard isRunning, activeRunChatID == nil else { return }
         hasHandledTerminalEvent = true
         error = appError
+        restoreClearedPromptIfNeeded()
         outputPromptText = ""
         outputText = ""
         finishTerminalRun()
+    }
+
+    private func restoreClearedPromptIfNeeded() {
+        guard let snapshot = clearedPromptSnapshot else { return }
+        defer { clearedPromptSnapshot = nil }
+        guard let index = chats.firstIndex(where: { $0.id == snapshot.chatID }),
+              chats[index].draft.isEmpty else {
+            return
+        }
+        chats[index].draft = snapshot.draft
+        chats[index].draftContextContent = snapshot.draftContextContent
+        chats[index].updatedAt = Date()
+        persistChats()
     }
 
     func apply(_ event: AppInferenceEvent, generation: Int? = nil) {
