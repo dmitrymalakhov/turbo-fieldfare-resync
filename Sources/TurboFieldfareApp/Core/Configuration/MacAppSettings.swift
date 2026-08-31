@@ -2,7 +2,7 @@ import Foundation
 
 struct MacAppSettings: Codable, Equatable, Sendable {
     static let fileName = "mac-app-settings.json"
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int = currentVersion
     var contextTokens: Int = AppContextLengthOption.fourK.tokens
@@ -19,7 +19,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var modelVerification: AppModelVerification = .fullSha256
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
-    var sentPromptBehavior: AppSentPromptBehavior = .keep
+    var sentPromptBehavior: AppSentPromptBehavior = .clear
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -55,7 +55,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          modelVerification: AppModelVerification = .fullSha256,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
-         sentPromptBehavior: AppSentPromptBehavior = .keep) {
+         sentPromptBehavior: AppSentPromptBehavior = .clear) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -76,7 +76,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(Int.self, forKey: .version)
+        let storedVersion = try container.decode(Int.self, forKey: .version)
+        version = storedVersion == 1 ? Self.currentVersion : storedVersion
         contextTokens = try container.decode(Int.self, forKey: .contextTokens)
         expertCacheSlots = try container.decode(Int.self, forKey: .expertCacheSlots)
         temperature = try container.decode(Double.self, forKey: .temperature)
@@ -103,9 +104,15 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         showPromptExamples = try container.decodeIfPresent(
             Bool.self,
             forKey: .showPromptExamples) ?? true
-        sentPromptBehavior = try container.decodeIfPresent(
-            AppSentPromptBehavior.self,
-            forKey: .sentPromptBehavior) ?? .keep
+        if storedVersion == 1 {
+            // Version 1 retained submitted text by default. Move existing
+            // installs to clear-after-send; Keep Draft remains available.
+            sentPromptBehavior = .clear
+        } else {
+            sentPromptBehavior = try container.decodeIfPresent(
+                AppSentPromptBehavior.self,
+                forKey: .sentPromptBehavior) ?? .clear
+        }
     }
 
     func isValid() -> Bool {

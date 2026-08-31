@@ -895,10 +895,11 @@ import Testing
         #expect(model.chats.count == 2)
         #expect(model.selectedChat.title == "New chat")
         #expect(model.promptAttachments == [attachment])
-        #expect(model.promptText == "pending")
+        #expect(model.promptText.isEmpty)
 
         model.cancel()
         await waitForIdle(model)
+        #expect(model.promptText == "pending")
     }
 
     @MainActor

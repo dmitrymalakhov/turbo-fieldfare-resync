@@ -55,7 +55,7 @@ import Testing
         #expect(settings == MacAppSettings())
     }
 
-    @Test func legacySettingsDefaultToReturnWithoutLosingValues() throws {
+    @Test func legacySettingsMigrateToClearDraftWithoutLosingValues() throws {
         let data = Data("""
         {
           "version": 1,
@@ -86,7 +86,21 @@ import Testing
         #expect(settings.modelVerification == .fullSha256)
         #expect(settings.newlineShortcut == .return)
         #expect(settings.showPromptExamples)
-        #expect(settings.sentPromptBehavior == .keep)
+        #expect(settings.version == MacAppSettings.currentVersion)
+        #expect(settings.sentPromptBehavior == .clear)
+    }
+
+    @Test func versionOneKeepPromptPreferenceMigratesToClearDraft() throws {
+        let legacy = MacAppSettings(
+            version: 1,
+            sentPromptBehavior: .keep)
+
+        let settings = try JSONDecoder().decode(
+            MacAppSettings.self,
+            from: JSONEncoder().encode(legacy))
+
+        #expect(settings.version == MacAppSettings.currentVersion)
+        #expect(settings.sentPromptBehavior == .clear)
     }
 
     @Test(arguments: AppNewlineShortcut.allCases)
