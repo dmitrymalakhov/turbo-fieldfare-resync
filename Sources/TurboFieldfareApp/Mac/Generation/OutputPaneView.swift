@@ -84,6 +84,15 @@ struct OutputPaneView: View {
 
             Divider()
 
+            Button("Export Response as PDF…", action: exportResponsePDF)
+                .disabled(model.outputResponsePlainText.isEmpty
+                          || model.isSelectedChatRunning)
+
+            Button("Prepare Presentation with Local Model") {
+                model.preparePresentationFromResponse()
+            }
+            .disabled(!model.canPreparePresentationFromResponse)
+
             Button("Export Conversation…", action: exportConversation)
                 .disabled(model.outputConversationPlainText.isEmpty)
 
@@ -118,6 +127,12 @@ struct OutputPaneView: View {
             if model.selectedChat.branchedFromChatID != nil {
                 branchSourceBanner
             }
+            HStack {
+                Spacer()
+                transcriptActions
+            }
+            .frame(maxWidth: 860)
+            .frame(maxWidth: .infinity)
             if model.isSelectedChatRunning {
                 IncrementalTranscriptView(
                     messages: model.transcriptBaseMessages.map { message in
@@ -215,9 +230,38 @@ struct OutputPaneView: View {
             editMessageButton
             branchChatButton
             if !model.outputResponsePlainText.isEmpty {
+                responseExportMenu
                 copyResponseButton
             }
         }
+    }
+
+    private var responseExportMenu: some View {
+        Menu {
+            Button("Export Response as PDF…", action: exportResponsePDF)
+                .disabled(model.isSelectedChatRunning)
+            Button("Prepare Presentation with Local Model") {
+                model.preparePresentationFromResponse()
+            }
+            .disabled(!model.canPreparePresentationFromResponse)
+            Divider()
+            Button("Export Conversation…", action: exportConversation)
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .background(.regularMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Export this answer or prepare a presentation")
+        .accessibilityLabel("Response export options")
     }
 
     private var editMessageButton: some View {
@@ -237,6 +281,7 @@ struct OutputPaneView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .disabled(!model.canEditSelectedChat)
         .help("Edit a message and branch from it")
         .accessibilityLabel("Edit message")
     }
@@ -262,6 +307,7 @@ struct OutputPaneView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .disabled(!model.canEditSelectedChat)
         .help("Branch this chat or continue from a specific message")
         .accessibilityLabel("Branch chat")
     }
@@ -465,6 +511,22 @@ struct OutputPaneView: View {
             try Data(markdown.utf8).write(to: url, options: .atomic)
         } catch {
             model.error = .unknown("Conversation could not be exported: \(error)")
+        }
+    }
+
+    private func exportResponsePDF() {
+        let panel = NSSavePanel()
+        panel.title = "Export Response as PDF"
+        panel.nameFieldStringValue = model.selectedChat.title + ".pdf"
+        panel.allowedContentTypes = [.pdf]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try ResponsePDFExporter.makePDF(
+                title: model.selectedChat.title,
+                response: model.outputResponsePlainText)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            model.error = .unknown("Response could not be exported as PDF: \(error.localizedDescription)")
         }
     }
 }

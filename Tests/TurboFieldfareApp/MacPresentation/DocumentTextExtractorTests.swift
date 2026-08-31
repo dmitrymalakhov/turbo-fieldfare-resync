@@ -4,16 +4,47 @@ import Testing
 @testable import TurboFieldfareMacPresentation
 
 @Suite struct DocumentTextExtractorTests {
-    @Test func advertisesExactlyTheFourSupportedDocumentFamilies() {
+    @Test func advertisesTextAndTheFourSupportedDocumentFamilies() {
         let extensions = Set(
             DocumentTextExtractor.supportedContentTypes.compactMap(
                 \.preferredFilenameExtension))
 
+        #expect(extensions.contains("txt"))
         #expect(extensions.contains("pdf"))
         #expect(extensions.contains("docx"))
         #expect(extensions.contains("pptx"))
         #expect(extensions.contains("xlsx"))
-        #expect(DocumentTextExtractor.supportedContentTypes.count == 4)
+        #expect(DocumentTextExtractor.supportedContentTypes.count == 5)
+    }
+
+    @Test func extractsAndNormalizesUTF8PlainText() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("notes.txt")
+        try Data("  Первая строка  \r\n\r\n\r\nВторая строка\n".utf8)
+            .write(to: url)
+
+        let document = try DocumentTextExtractor.extract(from: url)
+
+        #expect(document.formatLabel == "Text")
+        #expect(document.text == "Первая строка\n\nВторая строка")
+        #expect(!document.wasTruncated)
+    }
+
+    @Test func extractsUTF16MarkdownAsText() throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("brief.md")
+        let source = "# Заголовок\n\nТекст"
+        let data = try #require(source.data(using: .utf16LittleEndian))
+        var markedData = Data([0xFF, 0xFE])
+        markedData.append(data)
+        try markedData.write(to: url)
+
+        let document = try DocumentTextExtractor.extract(from: url)
+
+        #expect(document.formatLabel == "Text")
+        #expect(document.text == source)
     }
 
     @MainActor
@@ -225,9 +256,9 @@ import Testing
         let root = try makeTemporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let unsupported = root.appendingPathComponent("notes.txt")
+        let unsupported = root.appendingPathComponent("notes.bin")
         try Data("plain text".utf8).write(to: unsupported)
-        #expect(throws: DocumentTextExtractionError.unsupportedFormat("notes.txt")) {
+        #expect(throws: DocumentTextExtractionError.unsupportedFormat("notes.bin")) {
             _ = try DocumentTextExtractor.extract(from: unsupported)
         }
 
@@ -271,7 +302,7 @@ import Testing
 
     @Test func extractionErrorsHaveActionableUserMessages() {
         let cases: [(DocumentTextExtractionError, String)] = [
-            (.unsupportedFormat("a.txt"), "not a supported"),
+            (.unsupportedFormat("a.bin"), "not a supported"),
             (.unreadableFile("a.pdf"), "could not be read"),
             (.invalidArchive("a.docx"), "not a valid Office document"),
             (.documentTooLarge("a.xlsx"), "too large"),

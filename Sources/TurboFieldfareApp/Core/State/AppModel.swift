@@ -549,6 +549,18 @@ public final class AppModel {
         return canRun || canLoadModel || canReloadModel
     }
 
+    public var canPreparePresentationFromResponse: Bool {
+        guard !isRunning,
+              canEditSelectedChat,
+              selectedChat.messages.last?.role == .assistant else {
+            return false
+        }
+        let canUseReadyModel = isModelAvailable
+            && !loadState.isLoading
+            && !hasStaleLoadedRuntime
+        return canUseReadyModel || canLoadModel || canReloadModel
+    }
+
     public var isPreparingSubmission: Bool {
         pendingSubmissionAfterLoad && loadState.isLoading
     }
@@ -779,6 +791,24 @@ public final class AppModel {
             pendingSubmissionAfterLoad = true
             reloadModel()
         }
+    }
+
+    @discardableResult
+    public func preparePresentationFromResponse() -> AppChat.ID? {
+        guard canPreparePresentationFromResponse else { return nil }
+        let sourceChatID = selectedChatID
+        let sourceTitle = selectedChat.title
+        let branchID = branchChat(from: sourceChatID)
+        guard branchID != sourceChatID,
+              let branchIndex = chats.firstIndex(where: { $0.id == branchID }) else {
+            return nil
+        }
+
+        chats[branchIndex].title = AppPresentationPreparation.title(
+            from: sourceTitle)
+        promptText = AppPresentationPreparation.prompt
+        submitPrompt()
+        return branchID
     }
 
     public func perform(_ action: AppModelAction) {

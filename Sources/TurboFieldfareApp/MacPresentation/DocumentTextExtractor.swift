@@ -29,7 +29,7 @@ public enum DocumentTextExtractionError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .unsupportedFormat(let file):
-            return "\(file) is not a supported PDF, Word, PowerPoint, or Excel file."
+            return "\(file) is not a supported text, PDF, Word, PowerPoint, or Excel file."
         case .unreadableFile(let file):
             return "\(file) could not be read."
         case .invalidArchive(let file):
@@ -37,16 +37,17 @@ public enum DocumentTextExtractionError: LocalizedError, Equatable, Sendable {
         case .documentTooLarge(let file):
             return "\(file) is too large to extract safely."
         case .noExtractableText(let file):
-            return "No selectable text was found in \(file). Scanned PDFs require OCR."
+            return "No readable text was found in \(file). Scanned PDFs require OCR."
         }
     }
 }
 
 public enum DocumentTextExtractor {
     public static let maximumExtractedCharacters = 240_000
+    private static let maximumPlainTextBytes = 16 * 1_024 * 1_024
 
     public static var supportedContentTypes: [UTType] {
-        [UTType.pdf] + ["docx", "pptx", "xlsx"].compactMap {
+        [UTType.plainText, UTType.pdf] + ["docx", "pptx", "xlsx"].compactMap {
             UTType(filenameExtension: $0)
         }
     }
@@ -63,17 +64,21 @@ public enum DocumentTextExtractor {
         let extensionName = url.pathExtension.lowercased()
         let extracted: (label: String, text: String)
 
-        switch extensionName {
-        case "pdf":
-            extracted = ("PDF", try extractPDF(at: url))
-        case "docx":
-            extracted = ("Word", try extractDOCX(at: url))
-        case "pptx":
-            extracted = ("PowerPoint", try extractPPTX(at: url))
-        case "xlsx":
-            extracted = ("Excel", try extractXLSX(at: url))
-        default:
-            throw DocumentTextExtractionError.unsupportedFormat(fileName)
+        if UTType(filenameExtension: extensionName)?.conforms(to: .plainText) == true {
+            extracted = ("Text", try extractPlainText(at: url))
+        } else {
+            switch extensionName {
+            case "pdf":
+                extracted = ("PDF", try extractPDF(at: url))
+            case "docx":
+                extracted = ("Word", try extractDOCX(at: url))
+            case "pptx":
+                extracted = ("PowerPoint", try extractPPTX(at: url))
+            case "xlsx":
+                extracted = ("Excel", try extractXLSX(at: url))
+            default:
+                throw DocumentTextExtractionError.unsupportedFormat(fileName)
+            }
         }
 
         let normalized = normalize(extracted.text)
@@ -86,6 +91,44 @@ public enum DocumentTextExtractor {
             formatLabel: extracted.label,
             text: text,
             wasTruncated: text.count < normalized.count)
+    }
+
+    private static func extractPlainText(at url: URL) throws -> String {
+        let data: Data
+        do {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let fileSize = values.fileSize, fileSize > maximumPlainTextBytes {
+                throw DocumentTextExtractionError.documentTooLarge(url.lastPathComponent)
+            }
+            data = try Data(contentsOf: url, options: .mappedIfSafe)
+        } catch let extractionError as DocumentTextExtractionError {
+            throw extractionError
+        } catch {
+            throw DocumentTextExtractionError.unreadableFile(url.lastPathComponent)
+        }
+
+        guard data.count <= maximumPlainTextBytes,
+              let text = decodePlainText(data) else {
+            if data.count > maximumPlainTextBytes {
+                throw DocumentTextExtractionError.documentTooLarge(url.lastPathComponent)
+            }
+            throw DocumentTextExtractionError.unreadableFile(url.lastPathComponent)
+        }
+        return text
+    }
+
+    private static func decodePlainText(_ data: Data) -> String? {
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+            return String(data: data.dropFirst(3), encoding: .utf8)
+        }
+        if data.starts(with: [0xFF, 0xFE]) {
+            return String(data: data.dropFirst(2), encoding: .utf16LittleEndian)
+        }
+        if data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data.dropFirst(2), encoding: .utf16BigEndian)
+        }
+        return String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .windowsCP1251)
     }
 
     private static func extractPDF(at url: URL) throws -> String {

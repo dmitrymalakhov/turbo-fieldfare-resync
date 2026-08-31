@@ -277,7 +277,7 @@ struct PromptComposerView: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .disabled(!model.canEditSelectedChat || isExtractingDocuments)
-        .help("Attach PDF, Word, PowerPoint, or Excel files")
+        .help("Attach text, PDF, Word, PowerPoint, or Excel files")
         .accessibilityLabel(isExtractingDocuments
                             ? "Extracting document text"
                             : "Attach documents")

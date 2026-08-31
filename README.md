@@ -139,11 +139,15 @@ being deleted.
 Each message exposes contextual actions for copy, edit in a branch, continue
 from that point, or regenerate an assistant reply in a branch. Branches retain
 their source relationship without rewriting the original conversation. The
-conversation menu can export the visible transcript as plain text. Clearing a
-chat requires confirmation and can be undone immediately afterward.
+response toolbar can export the latest answer as a paginated PDF or ask the
+same local model to turn it into a presentation draft in a separate chat
+branch. The conversation menu can also export the visible transcript as plain
+text. Clearing a chat requires confirmation and can be undone immediately
+afterward.
 
-The composer can extract text locally from PDF, DOCX, PPTX, and XLSX files and
-include it with the next message. Files are not uploaded to a remote service.
+The composer can extract text locally from plain-text files, PDF, DOCX, PPTX,
+and XLSX files and include it with the next message. Files are not uploaded to
+a remote service.
 Files can be selected with the paperclip or dropped onto the composer, and
 extracted text can be previewed before sending. The composer reports estimated
 context use while you type so oversized prompts are visible before submission.
@@ -223,8 +227,8 @@ Installation does not load the model into memory.
 After installation:
 
 1. Enter a prompt in the composer.
-2. Optionally use the paperclip or drag and drop to attach PDF, DOCX, PPTX, or
-   XLSX files.
+2. Optionally use the paperclip or drag and drop to attach text, PDF, DOCX,
+   PPTX, or XLSX files.
 3. Choose **Load & Send**. Once loaded, the same control reads **Send**. You
    can also press <kbd>Command</kbd>+<kbd>Return</kbd>. Use
    **Settings > Send Message With** to choose Return or Command-Return.
