@@ -147,6 +147,10 @@ include it with the next message. Files are not uploaded to a remote service.
 Files can be selected with the paperclip or dropped onto the composer, and
 extracted text can be previewed before sending. The composer reports estimated
 context use while you type so oversized prompts are visible before submission.
+Select the context meter to see how recent messages, compressed memory, saved
+document text, current attachments, and the draft contribute to the next turn.
+The same panel can open the exact compressed memory, branch the conversation,
+or start a clean chat without discarding the original conversation or its draft.
 Scanned PDFs need a selectable text layer; images, slide graphics, and legacy
 binary Office files such as XLS are not model inputs. Long extracted text is
 trimmed to the configured context window and marked as truncated. Before a turn
