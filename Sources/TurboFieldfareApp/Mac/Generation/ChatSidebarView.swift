@@ -28,16 +28,15 @@ struct ChatSidebarView: View {
     @State private var renameText = ""
     @State private var chatPendingDeletion: AppChat?
     @State private var searchText = ""
+    @State private var isSearchVisible = false
     @State private var sidebarMode = ChatSidebarMode.chats
     @State private var taskBeingEdited: ChatTaskDraft?
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            newItemButton
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-            sidebarModePicker
+            primaryControls
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
             if sidebarMode == .tasks, !model.taskChats.isEmpty {
@@ -45,14 +44,16 @@ struct ChatSidebarView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
             }
-            chatSearch
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+            if isSearchVisible || !searchText.isEmpty {
+                chatSearch
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             Divider()
             chatList
-            Divider()
-            footer
         }
+        .animation(.smooth(duration: 0.18), value: isSearchVisible)
         .alert(
             "Rename chat",
             isPresented: renameAlertPresented,
@@ -100,18 +101,53 @@ struct ChatSidebarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "bolt.horizontal.circle.fill")
-                .font(.title3)
-                .foregroundStyle(TurboFieldfareMacTheme.accentColor)
-            Text("TurboFieldfare")
-                .font(.headline)
-                .lineLimit(1)
-            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(TurboFieldfareMacTheme.accentColor)
+                Text("TurboFieldfare")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .contentShape(.rect)
+            .gesture(WindowDragGesture())
+
+            appearanceMenu
         }
         .padding(.horizontal, 14)
         .padding(.top, 38)
         .padding(.bottom, 12)
-        .gesture(WindowDragGesture())
+    }
+
+    private var primaryControls: some View {
+        HStack(spacing: 8) {
+            sidebarModePicker
+            searchButton
+            newItemButton
+        }
+    }
+
+    private var searchButton: some View {
+        Button(action: toggleSearch) {
+            Label("Search", systemImage: "magnifyingglass")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.medium))
+                .frame(width: 30, height: 28)
+                .contentShape(.rect(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSearchVisible
+                         ? TurboFieldfareMacTheme.accentColor
+                         : Color.secondary)
+        .background(
+            isSearchVisible
+                ? TurboFieldfareMacTheme.accentColor.opacity(0.12)
+                : Color.clear,
+            in: .rect(cornerRadius: 7))
+        .keyboardShortcut("f", modifiers: .command)
+        .help("Search (⌘F)")
+        .accessibilityValue(isSearchVisible ? "Shown" : "Hidden")
     }
 
     private var newItemButton: some View {
@@ -122,35 +158,27 @@ struct ChatSidebarView: View {
                 createTask()
             }
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: sidebarMode == .chats
-                      ? "square.and.pencil"
-                      : "calendar.badge.plus")
-                Text(sidebarMode == .chats ? "New chat" : "New task")
-                    .fontWeight(.medium)
-                Spacer()
-                if sidebarMode == .chats {
-                    Text("⌘N")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 42)
-            .contentShape(.rect)
+            Label(
+                sidebarMode == .chats ? "New chat" : "New task",
+                systemImage: sidebarMode == .chats
+                    ? "square.and.pencil"
+                    : "calendar.badge.plus")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.medium))
+                .foregroundStyle(TurboFieldfareMacTheme.accentColor)
+                .frame(width: 32, height: 28)
+                .contentShape(.rect(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: .rect(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(.separator.opacity(0.45), lineWidth: 0.5)
-        }
+            TurboFieldfareMacTheme.accentColor.opacity(0.14),
+            in: .rect(cornerRadius: 7))
         .disabled(!model.canNavigateChats)
         .help(sidebarMode == .chats
-              ? "Create a chat with separate context"
-              : "Create a scheduled task with its own chat")
+              ? "New chat (⌘N)"
+              : "New task")
+        .accessibilityLabel(
+            sidebarMode == .chats ? "New chat" : "New task")
     }
 
     private var scheduledSummary: some View {
@@ -180,19 +208,23 @@ struct ChatSidebarView: View {
             sidebarMode == .chats ? "Search chats" : "Search tasks",
             text: $searchText)
         .textFieldStyle(.roundedBorder)
+        .focused($searchFocused)
+        .onExitCommand(perform: dismissSearch)
         .accessibilityLabel(
             sidebarMode == .chats ? "Search chats" : "Search tasks")
     }
 
     private var sidebarModePicker: some View {
-        Picker("Sidebar content", selection: $sidebarMode) {
+        Picker("View", selection: $sidebarMode) {
             Label("Chats", systemImage: "bubble.left.and.bubble.right")
                 .tag(ChatSidebarMode.chats)
-            Label("Scheduled", systemImage: "checklist")
+            Label("Tasks", systemImage: "checklist")
                 .tag(ChatSidebarMode.tasks)
         }
         .pickerStyle(.segmented)
-        .accessibilityLabel("Sidebar content")
+        .labelsHidden()
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("View")
     }
 
     private var chatList: some View {
@@ -203,9 +235,13 @@ struct ChatSidebarView: View {
                         chatSection("Pinned", chats: pinnedChats)
                     }
                     if !regularChats.isEmpty {
-                        chatSection(
-                            pinnedChats.isEmpty ? "Chats" : "Recent",
-                            chats: regularChats)
+                        if pinnedChats.isEmpty {
+                            ForEach(regularChats) { chat in
+                                chatRow(chat)
+                            }
+                        } else {
+                            chatSection("Recent", chats: regularChats)
+                        }
                     }
                 } else {
                     taskSections
@@ -294,14 +330,6 @@ struct ChatSidebarView: View {
                         ProgressView()
                             .controlSize(.mini)
                             .help("Generating in this chat")
-                    } else if sidebarMode == .chats {
-                        Image(systemName: isSelected
-                              ? "bubble.left.fill"
-                              : "bubble.left")
-                            .font(.caption)
-                            .foregroundStyle(isSelected
-                                             ? Color.accentColor
-                                             : Color.secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 5) {
@@ -467,19 +495,6 @@ struct ChatSidebarView: View {
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "internaldrive")
-            Text("\(model.chats.count) local \(model.chats.count == 1 ? "chat" : "chats") · \(model.taskChats.count) tasks")
-            Spacer()
-            appearanceMenu
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .frame(height: 42)
-    }
-
     private var appearanceMenu: some View {
         let appearance = AppAppearance.resolve(appearanceRawValue)
         return Menu {
@@ -541,6 +556,24 @@ struct ChatSidebarView: View {
 
     private var todayTaskCount: Int {
         model.taskChats.filter { $0.taskBucket() == .today }.count
+    }
+
+    private func toggleSearch() {
+        if isSearchVisible || !searchText.isEmpty {
+            dismissSearch()
+            return
+        }
+        isSearchVisible = true
+        Task { @MainActor in
+            await Task.yield()
+            searchFocused = true
+        }
+    }
+
+    private func dismissSearch() {
+        searchFocused = false
+        searchText = ""
+        isSearchVisible = false
     }
 
     private func createTask() {
