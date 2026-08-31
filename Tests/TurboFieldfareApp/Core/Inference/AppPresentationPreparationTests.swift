@@ -9,7 +9,8 @@ import Testing
         #expect(prompt.contains("same language"))
         #expect(prompt.contains("8 to 12 slides"))
         #expect(prompt.contains("Do not invent"))
-        #expect(prompt.contains("# Slide N - Title"))
+        #expect(prompt.contains("# Slide N - Audience-facing title"))
+        #expect(prompt.contains("Speaker notes:"))
     }
 
     @Test func presentationTitleIsTrimmedToChatTitleLimit() {
@@ -57,6 +58,12 @@ import Testing
 
         await waitForIdle(model)
         #expect(model.selectedChat.messages.last?.role == .assistant)
+        let exportRequest = try #require(model.presentationExportRequest)
+        #expect(exportRequest.chatID == branchID)
+        #expect(exportRequest.markdown == model.selectedChat.messages.last?.content)
+
+        model.consumePresentationExportRequest(id: exportRequest.id)
+        #expect(model.presentationExportRequest == nil)
     }
 
     @MainActor
