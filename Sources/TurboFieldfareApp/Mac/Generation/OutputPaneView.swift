@@ -730,7 +730,7 @@ private struct ContextMemoryNotice: View {
     }
 }
 
-private struct ConversationMemorySheet: View {
+struct ConversationMemorySheet: View {
     let memory: String
     @Environment(\.dismiss) private var dismiss
 
@@ -745,6 +745,11 @@ private struct ConversationMemorySheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(memory, forType: .string)
+                }
+                .disabled(memory.isEmpty)
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }

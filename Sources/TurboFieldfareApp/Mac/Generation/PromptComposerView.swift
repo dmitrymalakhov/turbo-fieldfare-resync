@@ -16,6 +16,9 @@ struct PromptComposerView: View {
     @State private var documentImportError: String?
     @State private var previewedAttachment: AppPromptAttachment?
     @State private var contextUsage: AppContextUsage?
+    @State private var isEstimatingContext = false
+    @State private var showingContextDashboard = false
+    @State private var showingConversationMemory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -66,13 +69,24 @@ struct PromptComposerView: View {
         .sheet(item: $previewedAttachment) { attachment in
             AttachmentPreviewSheet(attachment: attachment)
         }
+        .sheet(isPresented: $showingConversationMemory) {
+            ConversationMemorySheet(
+                memory: model.selectedChat.contextSummary ?? "")
+        }
         .task(id: contextEstimationKey) {
-            contextUsage = nil
             guard !model.promptText.trimmingCharacters(
-                in: .whitespacesAndNewlines).isEmpty else { return }
+                in: .whitespacesAndNewlines).isEmpty else {
+                contextUsage = nil
+                isEstimatingContext = false
+                return
+            }
+            isEstimatingContext = true
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            contextUsage = await model.estimateSelectedContextUsage()
+            let estimatedUsage = await model.estimateSelectedContextUsage()
+            guard !Task.isCancelled else { return }
+            contextUsage = estimatedUsage
+            isEstimatingContext = false
         }
     }
 
@@ -153,9 +167,7 @@ struct PromptComposerView: View {
             }
             attachDocumentAction
             promptTips
-            if let contextUsage {
-                contextIndicator(contextUsage)
-            }
+            contextControl
             Spacer()
             Text(shortcutHint)
                 .font(.caption2)
@@ -407,20 +419,99 @@ struct PromptComposerView: View {
         }
     }
 
-    private func contextIndicator(_ usage: AppContextUsage) -> some View {
-        HStack(spacing: 6) {
-            ProgressView(value: usage.fraction)
-                .progressViewStyle(.linear)
-                .frame(width: 48)
-                .tint(usage.fraction > 0.9 ? .orange : Color.accentColor)
-            Text("\(compactTokens(usage.promptTokens)) / \(compactTokens(usage.maximumTokens))")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(usage.fraction > 0.9 ? .orange : .secondary)
+    private var contextControl: some View {
+        Button {
+            showingContextDashboard.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                if let contextUsage {
+                    ProgressView(value: contextUsage.fraction)
+                        .progressViewStyle(.linear)
+                        .frame(width: 48)
+                        .tint(contextTint(contextUsage))
+                    Text(
+                        "\(compactTokens(contextUsage.promptTokens)) / "
+                            + compactTokens(contextUsage.maximumTokens))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(contextTint(contextUsage))
+                } else {
+                    Image(systemName: "brain")
+                    Text("Context")
+                        .font(.caption)
+                }
+                if isEstimatingContext {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+            .contentShape(.capsule)
         }
-        .help("Prompt context: \(usage.promptTokens) tokens. About \(usage.remainingTokens) tokens remain for the response.")
-        .accessibilityElement(children: .ignore)
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(.quaternary.opacity(0.25), in: .capsule)
+        .help(contextHelp)
         .accessibilityLabel("Context usage")
-        .accessibilityValue("\(usage.promptTokens) of \(usage.maximumTokens) tokens")
+        .accessibilityValue(contextAccessibilityValue)
+        .popover(
+            isPresented: $showingContextDashboard,
+            attachmentAnchor: .point(.top),
+            arrowEdge: .top
+        ) {
+            ContextDashboardView(
+                model: model,
+                usage: contextUsage,
+                isEstimating: isEstimatingContext,
+                showMemory: showConversationMemory,
+                branchChat: branchSelectedChat,
+                startCleanChat: startCleanChat)
+        }
+    }
+
+    private func contextTint(_ usage: AppContextUsage) -> Color {
+        if usage.isOverflowing { return .red }
+        if usage.requiresHistoryCompression || usage.fraction >= 0.85 {
+            return .orange
+        }
+        return .secondary
+    }
+
+    private var contextHelp: String {
+        guard let contextUsage else {
+            return "Inspect conversation memory and context for the next message"
+        }
+        if contextUsage.isOverflowing {
+            return "The current request does not fit the selected context window."
+        }
+        if contextUsage.requiresHistoryCompression {
+            return "Older messages will be compressed to fit the next request."
+        }
+        return "Prompt context: \(contextUsage.promptTokens) tokens. "
+            + "About \(contextUsage.remainingTokens) tokens remain for the response."
+    }
+
+    private var contextAccessibilityValue: String {
+        guard let contextUsage else { return "Exact usage not estimated" }
+        return "\(contextUsage.promptTokens) of \(contextUsage.maximumTokens) tokens"
+    }
+
+    private func showConversationMemory() {
+        showingContextDashboard = false
+        Task { @MainActor in
+            await Task.yield()
+            showingConversationMemory = true
+        }
+    }
+
+    private func branchSelectedChat() {
+        showingContextDashboard = false
+        model.branchChat(from: model.selectedChatID)
+    }
+
+    private func startCleanChat() {
+        showingContextDashboard = false
+        model.createChat()
     }
 
     private func compactTokens(_ value: Int) -> String {
@@ -441,9 +532,12 @@ struct PromptComposerView: View {
         hasher.combine(model.selectedChatID)
         hasher.combine(model.maxContextTokens)
         hasher.combine(model.promptText)
+        hasher.combine(model.selectedChat.contextSummary)
+        hasher.combine(model.selectedChat.summarizedThroughMessageID)
         for message in model.selectedChat.messages {
             hasher.combine(message.id)
             hasher.combine(message.content)
+            hasher.combine(message.contextContent)
         }
         for attachment in model.promptAttachments {
             hasher.combine(attachment.id)
