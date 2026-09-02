@@ -117,7 +117,7 @@ extension Args {
 
     input (choose one):
       --chat <message>           Single instruction using Gemma's chat template.
-      --chat-prompt <message>    Alias of --chat; required by --image.
+      --chat-prompt <message>    Alias for chat input; required with image input.
       --prompt <string>          Raw-completion prompt.
       --messages-file <path>     JSON chat messages with role and content fields.
 
