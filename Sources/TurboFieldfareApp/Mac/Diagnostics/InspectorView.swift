@@ -1,5 +1,6 @@
 import AppKit
 import TurboFieldfareAppCore
+import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct InspectorView: View {
@@ -10,6 +11,9 @@ struct InspectorView: View {
         Form {
             if model.hasStaleLoadedRuntime {
                 pendingChangesSection
+            }
+            if showsVisionSection {
+                visionSection
             }
             responseSection
             contextSection
@@ -27,6 +31,146 @@ struct InspectorView: View {
         .onChange(of: model.topPEnabled) { model.persistUserSettings() }
         .onChange(of: model.topP) { model.persistUserSettings() }
         .onChange(of: model.runtimeOptions) { model.persistUserSettings() }
+    }
+
+    /// Keep image support visible until the companion pack is installed and healthy.
+    /// The empty state advertises the optional capability before the text model download.
+    private var showsVisionSection: Bool {
+        VisionSectionVisibility.shows(
+            visionRuntimeEnabled: model.visionRuntimeEnabled,
+            visionRuntimeSupported: model.isVisionRuntimeSupported,
+            isModelInstalled: model.isModelInstalled,
+            isVisionPackInstalled: model.isVisionPackInstalled,
+            isCompanionOperationInProgress: model.isVisionCompanionOperationInProgress,
+            installState: model.visionInstallState)
+    }
+
+    private var visionSection: some View {
+        Section("Image Support") {
+            LabeledContent("State") {
+                Text(visionStatusLabel)
+                    .font(.caption)
+                    .foregroundStyle(visionStatusColor)
+            }
+            if model.isVisionRuntimeSupported && !model.isVisionPackInstalled {
+                LabeledContent("Download") {
+                    Text(MetricFormat.storage(
+                        model.visionInstallDescriptor.approximateDownloadBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let fraction = model.visionInstallProgressFraction {
+                ProgressView(value: fraction)
+                    .accessibilityValue(visionAccessibleProgress(fraction: fraction))
+                HStack(alignment: .firstTextBaseline) {
+                    Text(MetricFormat.percent(fraction * 100))
+                    Spacer(minLength: 8)
+                    if let eta = model.visionInstallETAText {
+                        Text(eta)
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            } else if model.isInstallingVisionPack {
+                ProgressView()
+                    .controlSize(.small)
+                if let eta = model.visionInstallETAText {
+                    Text(eta)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !model.isVisionRuntimeSupported {
+                Text("Image support requires an M2 or newer Mac. "
+                    + "Text generation remains available on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case .failed(let message) = model.visionInstallState {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if case .recoverable(let message) = model.visionInstallState {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if case .partial(let message) = model.visionInstallationStatus,
+                      !model.isInstallingVisionPack {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if case .unsupportedLayout = model.visionInstallationStatus {
+                Text("Image support needs a model directory named "
+                    + "“<name>.gturbo”, which is where the companion pack lives.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if case .failed(let message) = model.visionInstallReadiness,
+                      !model.isInstallingVisionPack {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if case .insufficientSpace(let requirement) = model.visionInstallReadiness,
+                      !model.isInstallingVisionPack {
+                Text("Free \(MetricFormat.storage(requirement.shortfallBytes)) more storage.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if model.isVisionCompanionOperationInProgress {
+                Text("Model actions stay unavailable until this finishes. "
+                    + "Your prompt, images, and transcript are kept.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if !model.isVisionPackInstalled && model.loadState.isReady {
+                Text("Unload the model before preparing image support.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if model.isVisionPackInstalled && model.loadState.isReady {
+                Text("Unload the model before removing image support.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                if model.isInstallingVisionPack {
+                    Button("Cancel", action: model.cancelVisionInstall)
+                        .disabled(!model.canCancelVisionInstall)
+                } else if case .readyToActivate = model.visionInstallState {
+                    Button("Discard", role: .destructive) {
+                        model.discardVisionPackDownload()
+                    }
+                    .disabled(!model.canDiscardVisionPackDownload)
+                    if model.isVisionRuntimeSupported {
+                        Button("Activate", action: model.activateVisionPack)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!model.canActivateVisionPack)
+                    }
+                } else if model.isVisionPackInstalled {
+                    Button("Remove", role: .destructive) {
+                        model.requestVisionPackRemoval()
+                    }
+                    .disabled(!model.canRemoveVisionPack)
+                } else {
+                    if model.hasVisionPackDirectory {
+                        Button("Remove", role: .destructive) {
+                            model.requestVisionPackRemoval()
+                        }
+                        .disabled(!model.canRemoveVisionPack)
+                    }
+                    if model.hasPartialVisionPackDownload {
+                        Button("Discard", role: .destructive) {
+                            model.discardVisionPackDownload()
+                        }
+                        .disabled(!model.canDiscardVisionPackDownload)
+                    }
+                    if model.isVisionRuntimeSupported {
+                        Button(visionInstallButtonLabel) {
+                            model.installVisionPack()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canInstallVisionPack)
+                    }
+                }
+            }
+        }
     }
 
     private var pendingChangesSection: some View {
@@ -52,6 +196,39 @@ struct InspectorView: View {
         }
     }
 
+    private var visionInstallButtonLabel: String {
+        if model.hasPartialVisionPackDownload { return "Resume" }
+        if model.hasVisionPackDirectory { return "Repair" }
+        return "Download"
+    }
+
+    private func visionAccessibleProgress(fraction: Double) -> String {
+        let percent = MetricFormat.percent(fraction * 100)
+        guard let eta = model.visionInstallETAText else { return percent }
+        return "\(percent), \(eta)"
+    }
+
+    private var visionStatusLabel: String {
+        guard model.isVisionRuntimeSupported else { return "Requires M2 or newer" }
+        if model.visionInstallState != .idle {
+            return model.visionInstallPhaseLabel
+        }
+        switch model.visionInstallationStatus {
+        case .missing: return "Not installed"
+        case .partial: return "Needs repair"
+        case .complete: return "Installed"
+        case .unsupportedLayout: return "Not available for this model"
+        }
+    }
+
+    private var visionStatusColor: Color {
+        guard model.isVisionRuntimeSupported else { return .secondary }
+        switch model.visionInstallationStatus {
+        case .partial: return .orange
+        case .missing, .complete, .unsupportedLayout: return .secondary
+        }
+    }
+
     private var responseSection: some View {
         Section("Response") {
             Picker("Style", selection: responseStyleBinding) {
@@ -64,7 +241,8 @@ struct InspectorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .disabled(model.isRunning || model.loadState.isLoading)
+        .disabled(model.isRunning || model.loadState.isLoading
+            || model.isVisionCompanionOperationInProgress)
     }
 
     private var contextSection: some View {
@@ -83,7 +261,8 @@ struct InspectorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .disabled(model.isRunning || model.loadState.isLoading)
+        .disabled(model.isRunning || model.loadState.isLoading
+            || model.isVisionCompanionOperationInProgress)
     }
 
     private var advancedSection: some View {
@@ -101,7 +280,8 @@ struct InspectorView: View {
                 .padding(.top, 8)
             }
         }
-        .disabled(model.isRunning || model.loadState.isLoading)
+        .disabled(model.isRunning || model.loadState.isLoading
+            || model.isVisionCompanionOperationInProgress)
     }
 
     private var localAPISection: some View {
@@ -152,6 +332,30 @@ struct InspectorView: View {
             }
             if model.canUnloadModel {
                 Button("Unload Model", action: model.unloadModel)
+            }
+            LabeledContent("State") {
+                Text(model.presentation.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if model.requiresModelInstallation {
+                LabeledContent("Download") {
+                    Text(MetricFormat.storage(model.installDescriptor.approximateDownloadBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Installed size") {
+                    Text(MetricFormat.storage(model.installDescriptor.installedBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let requirement = model.installRequirement {
+                    LabeledContent("Available") {
+                        Text(MetricFormat.storage(requirement.availableBytes))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             LabeledContent("Expert cache") {
                 Picker("Expert cache", selection: $model.runtimeOptions.expertCacheSlots) {

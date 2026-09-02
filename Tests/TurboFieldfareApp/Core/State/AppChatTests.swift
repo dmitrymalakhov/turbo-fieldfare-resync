@@ -562,7 +562,6 @@ import Testing
         let directory = FileManager.default.temporaryDirectory
         model.modelPathText = directory.path
         model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
-        model.setSentPromptBehavior(.clear)
         model.maxNewTokensOverride = 1
         model.promptText = "hello"
 

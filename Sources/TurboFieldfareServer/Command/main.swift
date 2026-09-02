@@ -3,6 +3,13 @@ import Foundation
 import TurboFieldfare
 import TurboFieldfareServerCore
 
+// Every request line goes to stderr, which is unbuffered, while the ready line
+// below goes to stdout, which is fully buffered when it is not a terminal. A
+// server started with its output redirected therefore showed an empty log for
+// its whole life and printed "ready" only as it exited - exactly inverted from
+// what an operator needs. Line buffering puts the line where it is useful.
+setvbuf(stdout, nil, _IOLBF, 0)
+
 let arguments: ServerArguments
 let runtimeConfiguration: RuntimeConfiguration
 do {
@@ -26,12 +33,17 @@ do {
     let backend = try await ServerModelSession.load(
         modelDirectory: modelURL,
         maxContext: arguments.maxContext,
+        visionPackURL: arguments.visionPack.map {
+            URL(fileURLWithPath: $0).standardizedFileURL
+        },
+        visionResidencyPolicy: arguments.visionResidency,
         promptCacheMode: arguments.promptCacheMode,
         runtimeConfiguration: runtimeConfiguration)
     let server = TurboFieldfareHTTPServer(
         modelID: arguments.modelID,
         queueLimit: arguments.queueLimit,
-        backend: backend)
+        backend: backend,
+        visionCapability: backend.visionCapability)
     _ = try await server.start(port: arguments.port)
     let baseURL = "http://127.0.0.1:\(arguments.port)"
     print("""
@@ -41,6 +53,7 @@ do {
       Model:     \(arguments.modelID)
       Context:   \(arguments.maxContext) tokens
       Cache:     \(arguments.promptCacheMode.rawValue)
+      Vision:    \(backend.visionCapability) (\(arguments.visionResidency.rawValue))
 
     OpenAI-compatible clients can use any local API key and \(baseURL)/v1.
     Press Control-C to stop the server.

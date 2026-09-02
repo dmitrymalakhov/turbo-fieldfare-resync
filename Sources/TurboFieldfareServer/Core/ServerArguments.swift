@@ -13,22 +13,29 @@ public struct ServerArguments: Equatable, Sendable {
     public let prefillPolicy: RuntimePrefillPolicy
     public let prefillChunkTokens: Int
     public let rdadvisePolicy: RDAdvicePolicyMode
+    public let visionPack: String?
+    public let visionResidency: VisionResidencyPolicy
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
 
       --model <dir>              Required model directory.
+      --vision-pack <dir>        Vision companion pack (default beside text model).
+      --vision-residency <on-demand|keep-ready>
+                                 Routed-expert residency during vision (default on-demand).
       --port <1...65535>         Loopback port (default 8080).
       --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
       --max-context <tokens>     4096, 8192, 16384, 32768, or 65536 (default 16384).
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
                                  Prompt KV reuse mode (default single-prefix).
-      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 16).
+      --expert-cache-slots <n>   Expert-cache slots: \(allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default 16).
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.
-      --prefill-chunk-tokens <n> Prefill chunk size: 32, 64, or 128 (default 128).
+      --prefill-chunk-tokens <n> Prefill chunk size: \(allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens))
+                                 (default 128). Each chunk re-reads the routed
+                                 expert pool, so larger chunks read less.
       --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive
                                  (default off).
       --help                     Show this help.
@@ -42,10 +49,14 @@ public struct ServerArguments: Equatable, Sendable {
         forceLogitsHead: Bool = true
     ) throws -> RuntimeConfiguration {
         guard RuntimeConfiguration.allowedExpertCacheSlots.contains(expertCacheSlots) else {
-            throw ServerArgumentError.invalid("--expert-cache-slots must be 8, 16, 24, or 32")
+            throw ServerArgumentError.notAllowed(
+                flag: "--expert-cache-slots",
+                allowed: RuntimeConfiguration.allowedExpertCacheSlots)
         }
         guard RuntimeConfiguration.allowedPrefillChunkTokens.contains(prefillChunkTokens) else {
-            throw ServerArgumentError.invalid("--prefill-chunk-tokens must be 32, 64, or 128")
+            throw ServerArgumentError.notAllowed(
+                flag: "--prefill-chunk-tokens",
+                allowed: RuntimeConfiguration.allowedPrefillChunkTokens)
         }
         guard prefillPolicy == .off
                 || expertCacheSlots >= RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
@@ -69,6 +80,8 @@ public struct ServerArguments: Equatable, Sendable {
         var maxContext = 16_384
         var queueLimit = 4
         var promptCacheMode: ServerPromptCacheMode = .singlePrefix
+        var visionPack: String?
+        var visionResidency: VisionResidencyPolicy = .onDemand
         var expertCacheSlots = 16
         var expertCachePolicy = RuntimeExpertCachePolicy.lfu
         var prefillPolicy = RuntimePrefillPolicy.chunked
@@ -113,10 +126,20 @@ public struct ServerArguments: Equatable, Sendable {
                         "--prompt-cache-mode must be off or single-prefix")
                 }
                 promptCacheMode = parsed
+            case "--vision-pack":
+                visionPack = value
+            case "--vision-residency":
+                guard let parsed = VisionResidencyPolicy(rawValue: value) else {
+                    throw ServerArgumentError.invalid(
+                        "--vision-residency must be on-demand or keep-ready")
+                }
+                visionResidency = parsed
             case "--expert-cache-slots":
                 guard let parsed = Int(value),
                       RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
-                    throw ServerArgumentError.invalid("--expert-cache-slots must be 8, 16, 24, or 32")
+                    throw ServerArgumentError.notAllowed(
+                        flag: flag,
+                        allowed: RuntimeConfiguration.allowedExpertCacheSlots)
                 }
                 expertCacheSlots = parsed
             case "--expert-cache-policy":
@@ -133,7 +156,9 @@ public struct ServerArguments: Equatable, Sendable {
             case "--prefill-chunk-tokens":
                 guard let parsed = Int(value),
                       RuntimeConfiguration.allowedPrefillChunkTokens.contains(parsed) else {
-                    throw ServerArgumentError.invalid("--prefill-chunk-tokens must be 32, 64, or 128")
+                    throw ServerArgumentError.notAllowed(
+                        flag: flag,
+                        allowed: RuntimeConfiguration.allowedPrefillChunkTokens)
                 }
                 prefillChunkTokens = parsed
             case "--rdadvise":
@@ -157,7 +182,26 @@ public struct ServerArguments: Equatable, Sendable {
                                expertCachePolicy: expertCachePolicy,
                                prefillPolicy: prefillPolicy,
                                prefillChunkTokens: prefillChunkTokens,
-                               rdadvisePolicy: rdadvisePolicy)
+                               rdadvisePolicy: rdadvisePolicy,
+                               visionPack: visionPack,
+                               visionResidency: visionResidency)
+    }
+}
+
+extension ServerArguments {
+    /// The one rendering shared by the help text and every rejection, so neither
+    /// can name a value the guard does not accept: the hardcoded
+    /// "32, 64, or 128" outlived the widening of the allowed set and told users
+    /// 256 was illegal while the guard accepted it.
+    static func allowedValueList(_ values: [Int]) -> String {
+        let words = values.map(String.init)
+        switch words.count {
+        case 0: return ""
+        case 1: return words[0]
+        case 2: return "\(words[0]) or \(words[1])"
+        default:
+            return words.dropLast().joined(separator: ", ") + ", or " + words[words.count - 1]
+        }
     }
 }
 
@@ -170,5 +214,11 @@ public enum ServerArgumentError: Error, Equatable, CustomStringConvertible {
         case .help: "help"
         case .invalid(let message): message
         }
+    }
+}
+
+extension ServerArgumentError {
+    static func notAllowed(flag: String, allowed: [Int]) -> ServerArgumentError {
+        .invalid("\(flag) must be \(ServerArguments.allowedValueList(allowed))")
     }
 }

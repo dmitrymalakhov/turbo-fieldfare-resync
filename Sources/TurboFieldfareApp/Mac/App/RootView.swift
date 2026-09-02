@@ -58,9 +58,9 @@ struct RootView: View {
         .tint(TurboFieldfareMacTheme.accentColor)
         .animation(.smooth(duration: 0.3), value: model.requiresModelInstallation)
         .animation(.smooth(duration: 0.25), value: model.error)
+        .animation(.smooth(duration: 0.2), value: model.presentation.conversationAction)
         .animation(.smooth(duration: 0.22), value: isChatSidebarVisible)
         .animation(.smooth(duration: 0.22), value: isInspectorVisible)
-        .animation(.smooth(duration: 0.2), value: model.presentation.conversationAction)
         .transaction { transaction in
             if model.isRunning {
                 transaction.animation = nil
@@ -147,7 +147,7 @@ struct RootView: View {
                 .padding(.vertical, 8)
                 .background(.quaternary.opacity(0.3), in: .capsule)
             }
-            if model.showsPromptExamples {
+            if model.shouldShowPromptExamples {
                 PromptExamplesView { preset in
                     model.promptText = preset.prompt
                 }
@@ -157,6 +157,8 @@ struct RootView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
+        .animation(.smooth(duration: 0.2), value: model.promptText.isEmpty)
+        .animation(.smooth(duration: 0.2), value: model.showPromptExamples)
         .animation(.smooth(duration: 0.2), value: model.showsPromptExamples)
     }
 

@@ -1,11 +1,12 @@
 import Foundation
+import TurboFieldfare
 
 struct MacAppSettings: Codable, Equatable, Sendable {
     static let fileName = "mac-app-settings.json"
     static let currentVersion = 2
 
     var version: Int = currentVersion
-    var contextTokens: Int = AppContextLengthOption.fourK.tokens
+    var contextTokens: Int = AppContextLengthOption.eightK.tokens
     var expertCacheSlots: Int = 16
     var temperature: Double = 0.2
     var topKEnabled: Bool = true
@@ -19,7 +20,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var modelVerification: AppModelVerification = .fullSha256
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
-    var sentPromptBehavior: AppSentPromptBehavior = .clear
+    var visionResidencyPolicy: VisionResidencyPolicy = .onDemand
+    var loadModelOnLaunch: Bool = false
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -37,11 +39,12 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case modelVerification
         case newlineShortcut
         case showPromptExamples
-        case sentPromptBehavior
+        case visionResidencyPolicy
+        case loadModelOnLaunch
     }
 
     init(version: Int = currentVersion,
-         contextTokens: Int = AppContextLengthOption.fourK.tokens,
+         contextTokens: Int = AppContextLengthOption.eightK.tokens,
          expertCacheSlots: Int = 16,
          temperature: Double = 0.2,
          topKEnabled: Bool = true,
@@ -55,7 +58,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          modelVerification: AppModelVerification = .fullSha256,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
-         sentPromptBehavior: AppSentPromptBehavior = .clear) {
+         visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
+         loadModelOnLaunch: Bool = false) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -71,13 +75,13 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.modelVerification = modelVerification
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
-        self.sentPromptBehavior = sentPromptBehavior
+        self.visionResidencyPolicy = visionResidencyPolicy
+        self.loadModelOnLaunch = loadModelOnLaunch
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let storedVersion = try container.decode(Int.self, forKey: .version)
-        version = storedVersion == 1 ? Self.currentVersion : storedVersion
+        version = try container.decode(Int.self, forKey: .version)
         contextTokens = try container.decode(Int.self, forKey: .contextTokens)
         expertCacheSlots = try container.decode(Int.self, forKey: .expertCacheSlots)
         temperature = try container.decode(Double.self, forKey: .temperature)
@@ -104,26 +108,28 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         showPromptExamples = try container.decodeIfPresent(
             Bool.self,
             forKey: .showPromptExamples) ?? true
-        if storedVersion == 1 {
-            // Version 1 retained submitted text by default. Move existing
-            // installs to clear-after-send; Keep Draft remains available.
-            sentPromptBehavior = .clear
-        } else {
-            sentPromptBehavior = try container.decodeIfPresent(
-                AppSentPromptBehavior.self,
-                forKey: .sentPromptBehavior) ?? .clear
-        }
+        visionResidencyPolicy = try container.decodeIfPresent(
+            VisionResidencyPolicy.self,
+            forKey: .visionResidencyPolicy) ?? .onDemand
+        loadModelOnLaunch = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .loadModelOnLaunch) ?? false
     }
 
     func isValid() -> Bool {
-        version == Self.currentVersion
-            && AppContextLengthOption.allCases.contains { $0.tokens == contextTokens }
+        AppContextLengthOption.allCases.contains { $0.tokens == contextTokens }
             && AppRuntimeOptions.allowedSlotCounts.contains(expertCacheSlots)
             && temperature.isFinite && (0...2).contains(temperature)
             && (1...256).contains(topK)
             && topP.isFinite && (0.01...1).contains(topP)
             && AppRuntimeOptions.allowedPrefillChunkTokens.contains(prefillChunkTokens)
     }
+}
+
+/// Just enough of the file to route on, so a newer build's schema cannot throw
+/// before its version has been read.
+private struct VersionStamp: Decodable {
+    let version: Int
 }
 
 enum MacAppSettingsFileStore {
@@ -139,8 +145,32 @@ enum MacAppSettingsFileStore {
         if fileManager.fileExists(atPath: fileURL.path) {
             do {
                 let data = try Data(contentsOf: fileURL)
-                let settings = try JSONDecoder().decode(MacAppSettings.self, from: data)
+                // The version is read on its own, before the full decode, because
+                // nine keys decode with a hard `decode` and a newer build is
+                // entitled to have moved any of them. Decoding first threw on
+                // exactly the files this branch exists to protect, and the throw
+                // reached the `catch` below, which deletes the file - so an older
+                // build silently replaced a newer one's settings with its own
+                // defaults. A version gate that cannot survive a schema change
+                // gates nothing.
+                let stamp = try JSONDecoder().decode(VersionStamp.self, from: data)
+                // This build does not know what a later version means, so it runs
+                // on defaults and leaves the file exactly as its owner wrote it.
+                guard stamp.version <= MacAppSettings.currentVersion else {
+                    return MacAppSettings()
+                }
+                var settings = try JSONDecoder().decode(MacAppSettings.self, from: data)
+                let needsMigration = settings.version < MacAppSettings.currentVersion
+                if needsMigration {
+                    // Version only: every existing value is still a deliberate
+                    // choice, and rewriting one here would silently discard it.
+                    settings.version = MacAppSettings.currentVersion
+                }
                 guard settings.isValid() else { throw InvalidSettings() }
+                if needsMigration {
+                    try? save(settings, forModelDirectory: modelDirectory,
+                              fileManager: fileManager)
+                }
                 return settings
             } catch {
                 try? fileManager.removeItem(at: fileURL)

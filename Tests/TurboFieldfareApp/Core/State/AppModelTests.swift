@@ -13,14 +13,14 @@ import Testing
         #expect(request.temperature == 0.2)
         #expect(request.topK == 64)
         #expect(request.topP == 0.95)
-        #expect(request.maxNewTokens == 4_096)
+        #expect(request.maxNewTokens == 8_192,
+                "the reply limit follows the default context, 8K since 2026-08-17")
         #expect(request.repetitionPenalty == 1)
         #expect(!request.isPureGreedy)
         #expect(request.runtimeOptions.expertCacheSlots == 16)
         #expect(request.runtimeOptions.expertCachePolicy == .lfu)
         #expect(request.runtimeOptions.rdadvisePolicy == .off)
         #expect(request.runtimeOptions.prefillEnabled)
-        #expect(model.sentPromptBehavior == .clear)
     }
 
     @MainActor
@@ -95,7 +95,9 @@ import Testing
         model.applyLoadState(.ready(modelDirectory: directory, loadSeconds: 0))
 
         #expect(!model.hasStaleLoadedRuntime)
-        model.maxContextTokens = AppContextLengthOption.eightK.tokens
+        // Away from the default, which is 8K: setting the value it already has
+        // would prove nothing.
+        model.maxContextTokens = AppContextLengthOption.sixteenK.tokens
         #expect(model.hasStaleLoadedRuntime)
     }
 
@@ -148,6 +150,32 @@ import Testing
     }
 
     @MainActor
+    @Test func promptExamplesOnlyShowBeforeTheFirstTurnWithAnEmptyComposer() async {
+        let model = readyModel(client: MockInferenceClient(response: "answer"))
+
+        #expect(model.shouldShowPromptExamples)
+        model.promptText = "draft"
+        #expect(!model.shouldShowPromptExamples)
+
+        model.promptText = ""
+        model.setShowPromptExamples(false)
+        #expect(!model.shouldShowPromptExamples)
+
+        model.setShowPromptExamples(true)
+        model.promptText = "first turn"
+        model.run()
+        await waitForIdle(model)
+
+        #expect(model.promptText.isEmpty)
+        #expect(model.hasOutputTranscript)
+        #expect(!model.shouldShowPromptExamples,
+                "an empty composer must not cover an existing conversation with examples")
+
+        model.newChat()
+        #expect(model.shouldShowPromptExamples)
+    }
+
+    @MainActor
     @Test func mockRunUpdatesOutputAndDiagnostics() async throws {
         let client = MockInferenceClient(response: "alpha beta", tokenDelayNanos: 1)
         let model = AppModel(client: client)
@@ -171,13 +199,12 @@ import Testing
     @Test func runSnapshotsPromptIntoOutputTranscript() async throws {
         let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
         let model = readyModel(client: client)
-        model.setSentPromptBehavior(.keep)
         model.promptText = "original prompt"
         model.maxNewTokensOverride = 1
         model.run()
 
         #expect(model.outputPromptText == "original prompt")
-        #expect(model.promptText == "original prompt")
+        #expect(model.promptText.isEmpty)
         #expect(model.hasOutputTranscript)
         #expect(model.outputResponsePlainText.isEmpty)
         #expect(model.outputConversationPlainText == "You:\noriginal prompt")
@@ -218,7 +245,6 @@ import Testing
     @MainActor
     @Test func failedValidationDoesNotClearPrompt() {
         let model = readyModel(client: MockInferenceClient(response: "answer"))
-        model.setSentPromptBehavior(.clear)
         model.promptText = "keep invalid prompt"
         model.maxNewTokensOverride = 0
 
@@ -273,7 +299,7 @@ import Testing
         #expect(model.outputConversationPlainText.hasPrefix(
             "You:\nstop after token\n\nAnswer:\n"))
 
-        model.clearOutput()
+        model.newChat()
         #expect(!model.hasOutputTranscript)
         #expect(model.outputPromptText.isEmpty)
         #expect(model.outputText.isEmpty)
@@ -305,7 +331,7 @@ import Testing
         #expect(model.outputConversationPlainText == "You:\nprefill prompt")
         #expect(model.hasOutputTranscript)
 
-        model.clearOutput()
+        model.newChat()
         #expect(!model.hasOutputTranscript)
     }
 
