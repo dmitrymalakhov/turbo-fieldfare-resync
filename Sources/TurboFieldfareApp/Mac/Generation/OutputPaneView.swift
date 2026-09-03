@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 
 struct OutputPaneView: View {
     let model: AppModel
-    @State private var responseCopyFeedbackID: UUID?
     @State private var messageBeingEdited: AppChatMessage?
     @State private var showingClearConfirmation = false
     @State private var showingConversationMemory = false
@@ -20,14 +19,6 @@ struct OutputPaneView: View {
                 branchedPlaceholder
             } else {
                 placeholder
-            }
-        }
-        .task(id: responseCopyFeedbackID) {
-            guard let feedbackID = responseCopyFeedbackID else { return }
-            try? await Task.sleep(for: .seconds(1.2))
-            guard !Task.isCancelled, responseCopyFeedbackID == feedbackID else { return }
-            withAnimation(.easeOut(duration: 0.15)) {
-                responseCopyFeedbackID = nil
             }
         }
         .sheet(item: $messageBeingEdited) { message in
@@ -238,12 +229,15 @@ struct OutputPaneView: View {
 
     private var transcriptActions: some View {
         HStack(spacing: 6) {
-            editMessageButton
+            Text("Chat")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
             branchChatButton
             if !model.outputResponsePlainText.isEmpty {
                 responseExportMenu
-                copyResponseButton
             }
+            conversationActionsMenu
         }
     }
 
@@ -260,54 +254,42 @@ struct OutputPaneView: View {
             Divider()
             Button("Export Conversation…", action: exportConversation)
         } label: {
-            Image(systemName: "square.and.arrow.up")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-                .background(.regularMaterial, in: Circle())
-                .overlay {
-                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
-                }
+            chatActionLabel("Export", systemImage: "square.and.arrow.up")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Export this answer as PDF or PowerPoint")
-        .accessibilityLabel("Response export options")
-    }
-
-    private var editMessageButton: some View {
-        Menu {
-            editMessageButtons
-        } label: {
-            Image(systemName: "pencil")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-                .background(.regularMaterial, in: Circle())
-                .overlay {
-                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
-                }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(!model.canEditSelectedChat)
-        .help("Edit a message and branch from it")
-        .accessibilityLabel("Edit message")
+        .help("Export the latest answer or this conversation")
+        .accessibilityLabel("Export options")
     }
 
     private var branchChatButton: some View {
-        Menu {
-            Button("Branch entire chat") {
-                model.branchChat(from: model.selectedChatID)
-            }
-            Divider()
-            branchFromMessageButtons
+        Button {
+            model.branchChat(from: model.selectedChatID)
         } label: {
-            Image(systemName: "arrow.triangle.branch")
+            chatActionLabel("Branch chat", systemImage: "arrow.triangle.branch")
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .disabled(!model.canEditSelectedChat)
+        .help("Create a branch from the entire chat")
+    }
+
+    private var conversationActionsMenu: some View {
+        Menu {
+            Button("Copy conversation") {
+                copy(model.outputConversationPlainText)
+            }
+            .disabled(model.outputConversationPlainText.isEmpty)
+
+            Divider()
+
+            Button("Clear chat history", role: .destructive) {
+                showingClearConfirmation = true
+            }
+            .disabled(!model.canEditSelectedChat || !model.hasOutputTranscript)
+        } label: {
+            Image(systemName: "ellipsis")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 28, height: 28)
@@ -320,9 +302,25 @@ struct OutputPaneView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(!model.canEditSelectedChat)
-        .help("Branch this chat or continue from a specific message")
-        .accessibilityLabel("Branch chat")
+        .help("More chat actions")
+        .accessibilityLabel("More chat actions")
+    }
+
+    private func chatActionLabel(
+        _ title: String,
+        systemImage: String
+    ) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .contentShape(.rect)
+            .background(.regularMaterial, in: .rect(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(.separator.opacity(0.5), lineWidth: 0.5)
+            }
     }
 
     private var branchFromMessageMenu: some View {
@@ -409,35 +407,6 @@ struct OutputPaneView: View {
         return isEditedAssistantMessage(lastMessage)
     }
 
-    private var copyResponseButton: some View {
-        Button {
-            copyResponse()
-        } label: {
-            Image(systemName: responseCopyFeedbackID == nil
-                  ? "doc.on.doc"
-                  : "checkmark.circle.fill")
-                .font(.callout.weight(.medium))
-                .contentTransition(.symbolEffect(.replace))
-                .foregroundStyle(responseCopyFeedbackID == nil
-                                 ? Color.secondary
-                                 : TurboFieldfareMacTheme.accentColor)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-                .background(.regularMaterial, in: Circle())
-                .overlay {
-                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
-                }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(responseCopyFeedbackID == nil
-                            ? "Copy last answer"
-                            : "Response copied")
-        .accessibilityHint("Copies only the generated answer")
-        .help(responseCopyFeedbackID == nil
-              ? "Copy last answer"
-              : "Response copied")
-    }
-
     private var emptyPlaceholderContent: some View {
         VStack(spacing: 8) {
             if !needsModelLoad {
@@ -508,9 +477,6 @@ struct OutputPaneView: View {
 
     private func copyResponse() {
         copy(model.outputResponsePlainText)
-        withAnimation(.easeIn(duration: 0.15)) {
-            responseCopyFeedbackID = UUID()
-        }
     }
 
     private func exportConversation() {
@@ -709,6 +675,8 @@ private struct TranscriptMessageRow: View {
     let branch: (AppChatMessage) -> Void
     let regenerate: (AppChatMessage) -> Void
     @State private var isHovered = false
+    @State private var didCopy = false
+    @FocusState private var focusedAction: MessageAction?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -727,10 +695,12 @@ private struct TranscriptMessageRow: View {
                         .background(.quaternary.opacity(0.4), in: .capsule)
                 }
                 Spacer()
-                messageActions
-                    .opacity(isHovered ? 1 : 0.18)
             }
             messageContent
+            messageActions
+                .opacity(actionsAreVisible ? 1 : 0)
+                .allowsHitTesting(actionsAreVisible)
+                .animation(.easeOut(duration: 0.12), value: actionsAreVisible)
         }
         .padding(message.role == .user ? 14 : 4)
         .background(
@@ -745,6 +715,14 @@ private struct TranscriptMessageRow: View {
             }
         }
         .onHover { isHovered = $0 }
+        .task(id: didCopy) {
+            guard didCopy else { return }
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.15)) {
+                didCopy = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -765,11 +743,21 @@ private struct TranscriptMessageRow: View {
         HStack(spacing: 2) {
             Button {
                 copy(content)
+                withAnimation(.easeIn(duration: 0.15)) {
+                    didCopy = true
+                }
             } label: {
-                Label("Copy message", systemImage: "doc.on.doc")
+                Label(copyActionLabel, systemImage: didCopy
+                      ? "checkmark.circle.fill"
+                      : "doc.on.doc")
                     .labelStyle(.iconOnly)
+                    .contentTransition(.symbolEffect(.replace))
+                    .foregroundStyle(didCopy
+                                     ? TurboFieldfareMacTheme.accentColor
+                                     : Color.secondary)
             }
-            .help("Copy message")
+            .focused($focusedAction, equals: .copy)
+            .help(copyActionLabel)
             if canEdit {
                 Button {
                     edit(message)
@@ -777,6 +765,7 @@ private struct TranscriptMessageRow: View {
                     Label("Edit and branch", systemImage: "pencil")
                         .labelStyle(.iconOnly)
                 }
+                .focused($focusedAction, equals: .edit)
                 .help("Edit this message and create a branch")
                 Button {
                     branch(message)
@@ -784,24 +773,46 @@ private struct TranscriptMessageRow: View {
                     Label("Continue from here", systemImage: "arrow.triangle.branch")
                         .labelStyle(.iconOnly)
                 }
+                .focused($focusedAction, equals: .branch)
                 .help("Continue from this message in a new branch")
                 if message.role == .assistant {
+                    Divider()
+                        .frame(height: 16)
+                        .padding(.horizontal, 3)
                     Button {
                         regenerate(message)
                     } label: {
                         Label("Regenerate", systemImage: "arrow.clockwise")
                             .labelStyle(.iconOnly)
                     }
+                    .focused($focusedAction, equals: .regenerate)
                     .help("Regenerate this answer in a new branch")
                 }
             }
         }
+        .frame(minHeight: 22)
         .buttonStyle(.borderless)
         .accessibilityElement(children: .contain)
     }
 
+    private var actionsAreVisible: Bool {
+        isHovered || focusedAction != nil
+    }
+
+    private var copyActionLabel: String {
+        if didCopy { return "Copied" }
+        return message.role == .assistant ? "Copy answer" : "Copy message"
+    }
+
     private var roleLabel: String {
         message.role == .user ? "You" : "Answer"
+    }
+
+    private enum MessageAction: Hashable {
+        case copy
+        case edit
+        case branch
+        case regenerate
     }
 }
 
