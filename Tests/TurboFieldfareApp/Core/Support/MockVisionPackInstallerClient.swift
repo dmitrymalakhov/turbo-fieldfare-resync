@@ -10,6 +10,7 @@ final class MockVisionPackInstallerClient: AppVisionPackInstallerClient, Sendabl
     let holdOpen: Bool
     let preparedValid: Bool
     let activationError: RepackError?
+    let activationAction: @Sendable (URL) throws -> URL
     /// Fractions the activation reports before it finishes, with a pause after
     /// each so a cancel can land mid-verification.
     let activationProgress: [Double]
@@ -28,7 +29,8 @@ final class MockVisionPackInstallerClient: AppVisionPackInstallerClient, Sendabl
         holdOpen: Bool = false,
         preparedValid: Bool = false,
         activationError: RepackError? = nil,
-        activationProgress: [Double] = []
+        activationProgress: [Double] = [],
+        activationAction: @escaping @Sendable (URL) throws -> URL = { $0 }
     ) {
         self.descriptor = descriptor
         self.requirement = requirement
@@ -37,6 +39,7 @@ final class MockVisionPackInstallerClient: AppVisionPackInstallerClient, Sendabl
         self.preparedValid = preparedValid
         self.activationError = activationError
         self.activationProgress = activationProgress
+        self.activationAction = activationAction
     }
 
     func checkInstallRequirement(
@@ -91,7 +94,7 @@ final class MockVisionPackInstallerClient: AppVisionPackInstallerClient, Sendabl
         }
         try Task.checkCancellation()
         if let activationError { throw activationError }
-        return textModelDirectory
+        return try activationAction(textModelDirectory)
     }
 
     func cancel() {

@@ -60,7 +60,13 @@ struct InspectorView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if let fraction = model.visionInstallProgressFraction {
+            if model.isPreparingVisionSupport {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Unloading the text model before enabling image support…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let fraction = model.visionInstallProgressFraction {
                 ProgressView(value: fraction)
                     .accessibilityValue(visionAccessibleProgress(fraction: fraction))
                 HStack(alignment: .firstTextBaseline) {
@@ -120,7 +126,7 @@ struct InspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if !model.isVisionPackInstalled && model.loadState.isReady {
-                Text("Unload the model before preparing image support.")
+                Text("The app will unload the model, enable image support, then load it again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if model.isVisionPackInstalled && model.loadState.isReady {
@@ -130,7 +136,10 @@ struct InspectorView: View {
             }
 
             HStack {
-                if model.isInstallingVisionPack {
+                if model.isPreparingVisionSupport {
+                    Button("Preparing…") {}
+                        .disabled(true)
+                } else if model.isInstallingVisionPack {
                     Button("Cancel", action: model.cancelVisionInstall)
                         .disabled(!model.canCancelVisionInstall)
                 } else if case .readyToActivate = model.visionInstallState {
@@ -139,9 +148,9 @@ struct InspectorView: View {
                     }
                     .disabled(!model.canDiscardVisionPackDownload)
                     if model.isVisionRuntimeSupported {
-                        Button("Activate", action: model.activateVisionPack)
+                        Button("Enable", action: model.enableVisionPack)
                             .buttonStyle(.borderedProminent)
-                            .disabled(!model.canActivateVisionPack)
+                            .disabled(!model.canEnableVisionPack)
                     }
                 } else if model.isVisionPackInstalled {
                     Button("Remove", role: .destructive) {
@@ -163,10 +172,10 @@ struct InspectorView: View {
                     }
                     if model.isVisionRuntimeSupported {
                         Button(visionInstallButtonLabel) {
-                            model.installVisionPack()
+                            model.enableVisionPack()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.canInstallVisionPack)
+                        .disabled(!model.canEnableVisionPack)
                     }
                 }
             }
@@ -197,9 +206,9 @@ struct InspectorView: View {
     }
 
     private var visionInstallButtonLabel: String {
-        if model.hasPartialVisionPackDownload { return "Resume" }
-        if model.hasVisionPackDirectory { return "Repair" }
-        return "Download"
+        if model.hasPartialVisionPackDownload { return "Resume & Enable" }
+        if model.hasVisionPackDirectory { return "Repair & Enable" }
+        return "Enable"
     }
 
     private func visionAccessibleProgress(fraction: Double) -> String {
@@ -242,7 +251,8 @@ struct InspectorView: View {
                 .foregroundStyle(.secondary)
         }
         .disabled(model.isRunning || model.loadState.isLoading
-            || model.isVisionCompanionOperationInProgress)
+            || model.isVisionCompanionOperationInProgress
+            || model.isLocalServerActive)
     }
 
     private var contextSection: some View {
@@ -262,7 +272,8 @@ struct InspectorView: View {
                 .foregroundStyle(.secondary)
         }
         .disabled(model.isRunning || model.loadState.isLoading
-            || model.isVisionCompanionOperationInProgress)
+            || model.isVisionCompanionOperationInProgress
+            || model.isLocalServerActive)
     }
 
     private var advancedSection: some View {
@@ -281,27 +292,97 @@ struct InspectorView: View {
             }
         }
         .disabled(model.isRunning || model.loadState.isLoading
-            || model.isVisionCompanionOperationInProgress)
+            || model.isVisionCompanionOperationInProgress
+            || model.isLocalServerActive)
     }
 
     private var localAPISection: some View {
         Section("Local API") {
+            LabeledContent("State") {
+                Text(localServerStatusLabel)
+                    .font(.caption)
+                    .foregroundStyle(localServerStatusColor)
+            }
             LabeledContent("Base URL") {
-                Text("http://127.0.0.1:8080/v1")
+                Text(model.localServerBaseURL.absoluteString)
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
             }
-            Text("Run the separate OpenAI-compatible server when this app is not using the model.")
+            Text(localServerDetail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if model.loadState.isReady {
-                Label("Unload the app model before starting the server.", systemImage: "exclamationmark.triangle")
+            if case .failed(let message) = model.localServerState {
+                Label(message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
             }
-            Button("Copy Server Command") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(serverCommand, forType: .string)
+            if model.localServerState == .waitingForModelUnload
+                || model.localServerState == .starting
+                || model.localServerState == .stopping {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            if !model.localServerLog.isEmpty {
+                DisclosureGroup("Server log") {
+                    Text(model.localServerLog)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                if model.isLocalServerActive {
+                    Button("Stop Server", action: model.stopLocalServer)
+                        .disabled(!model.canStopLocalServer)
+                } else {
+                    Button("Start Server", action: model.startLocalServer)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canStartLocalServer)
+                }
+                Button("Copy Command") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(serverCommand, forType: .string)
+                }
+            }
+        }
+    }
+
+    private var localServerStatusLabel: String {
+        switch model.localServerState {
+        case .stopped: "Stopped"
+        case .waitingForModelUnload: "Unloading app model"
+        case .starting: "Starting"
+        case .running:
+            model.localServerProcessIdentifier.map { "Running · PID \($0)" }
+                ?? "Running"
+        case .stopping: "Stopping"
+        case .failed: "Failed"
+        }
+    }
+
+    private var localServerStatusColor: Color {
+        switch model.localServerState {
+        case .running: .green
+        case .waitingForModelUnload, .starting, .stopping: .orange
+        case .failed: .red
+        case .stopped: .secondary
+        }
+    }
+
+    private var localServerDetail: String {
+        switch model.localServerState {
+        case .running:
+            "The OpenAI-compatible API is available on this Mac only."
+        case .waitingForModelUnload, .starting:
+            "The server is taking ownership of the model. Startup can take several minutes."
+        case .stopping:
+            "Stopping the owned server and returning the model to the app."
+        case .stopped, .failed:
+            if model.loadState.isReady {
+                "Starting the server unloads the app model and restores it after Stop."
+            } else {
+                "Start the OpenAI-compatible server on 127.0.0.1 without leaving the app."
             }
         }
     }
@@ -330,6 +411,7 @@ struct InspectorView: View {
             Button("Choose Model Folder…") {
                 ModelLocationPicker.choose(for: model)
             }
+            .disabled(model.isLocalServerActive)
             if model.canUnloadModel {
                 Button("Unload Model", action: model.unloadModel)
             }
@@ -442,7 +524,18 @@ struct InspectorView: View {
     }
 
     private var serverCommand: String {
-        let escapedPath = model.modelPathText.replacingOccurrences(of: "\"", with: "\\\"")
-        return "swift run -c release TurboFieldfareServer --model \"\(escapedPath)\""
+        let escapedPath = model.modelPathText.replacingOccurrences(
+            of: "'", with: "'\\''")
+        let options = model.runtimeOptions
+        return "swift run -c release TurboFieldfareServer"
+            + " --model '\(escapedPath)'"
+            + " --port \(model.localServerPort)"
+            + " --max-context \(model.maxContextTokens)"
+            + " --expert-cache-slots \(options.expertCacheSlots)"
+            + " --expert-cache-policy \(options.expertCachePolicy.rawValue)"
+            + " --prefill \(options.prefillEnabled ? "on" : "off")"
+            + " --prefill-chunk-tokens \(options.prefillChunkTokens)"
+            + " --rdadvise \(options.rdadvisePolicy.rawValue)"
+            + " --vision-residency \(options.visionResidencyPolicy.rawValue)"
     }
 }

@@ -96,6 +96,11 @@ public final class AppModel {
     public private(set) var visionInstallReadiness: AppModelInstallReadiness = .checking
     public private(set) var visionInstallationStatus: AppVisionPackInstallationStatus
 
+    public private(set) var localServerState: AppLocalServerState = .stopped
+    public private(set) var localServerProcessIdentifier: Int32?
+    public private(set) var localServerLog = ""
+    public let localServerPort = 8_080
+
     public var loadState: AppModelLoadState = .notLoaded
     public private(set) var loadedRuntimeKey: AppLoadedRuntimeKey?
     public private(set) var phase: AppGenerationPhase = .idle
@@ -125,6 +130,7 @@ public final class AppModel {
     private let client: any AppInferenceClient
     private let installer: any AppModelInstallerClient
     private let visionInstaller: any AppVisionPackInstallerClient
+    private let localServerClient: (any AppLocalServerClient)?
     private var runTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
@@ -143,6 +149,11 @@ public final class AppModel {
     private var installGeneration: UInt64 = 0
     private var visionInstallGeneration: UInt64 = 0
     private var visionInstallCancellationRequested = false
+    private var pendingVisionEnableAfterUnload = false
+    private var automaticallyActivateVisionInstall = false
+    private var reloadModelAfterVisionInstall = false
+    private var pendingLocalServerStartAfterUnload = false
+    private var reloadModelAfterLocalServerStops = false
     private var pendingExplicitLoadRuntimeKey: AppLoadedRuntimeKey?
     private var activeRunRuntimeKey: AppLoadedRuntimeKey?
     public private(set) var activeRunChatID: AppChat.ID?
@@ -169,6 +180,7 @@ public final class AppModel {
                 client: any AppInferenceClient = RealInferenceClient(),
                 installer: any AppModelInstallerClient = RepackModelInstallerClient(),
                 visionInstaller: any AppVisionPackInstallerClient = RepackVisionPackInstallerClient(),
+                localServerClient: (any AppLocalServerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
                 attachmentStore: AppImageAttachmentStore = AppImageAttachmentStore(),
                 visionRuntimeSupported: Bool = true,
@@ -212,6 +224,7 @@ public final class AppModel {
         self.client = client
         self.installer = installer
         self.visionInstaller = visionInstaller
+        self.localServerClient = localServerClient
         self.memorySampler = memorySampler
         self.attachmentStore = attachmentStore
         self.isVisionRuntimeSupported = visionRuntimeSupported
@@ -348,6 +361,7 @@ public final class AppModel {
 
     public var canLoadModel: Bool {
         isModelInstalled && !isRunning && !isVisionCompanionOperationInProgress
+            && !isLocalServerActive
             && (loadState == .notLoaded || loadState.isFailed)
     }
 
@@ -358,11 +372,13 @@ public final class AppModel {
 
     public var canReloadModel: Bool {
         isModelInstalled && !isRunning && !isVisionCompanionOperationInProgress
+            && !isLocalServerActive
             && loadState.isReady && hasStaleLoadedRuntime
     }
 
     public var canUnloadModel: Bool {
         isModelInstalled && !isRunning && !isVisionCompanionOperationInProgress
+            && !isLocalServerActive
             && loadState.isReady
     }
 
@@ -382,6 +398,7 @@ public final class AppModel {
         guard case .ready = installReadiness else { return false }
         return !isRunning && !loadState.isLoading && !isInstallingModel
             && !isVisionCompanionOperationInProgress
+            && !isLocalServerActive
             && requiresModelInstallation
     }
 
@@ -403,12 +420,42 @@ public final class AppModel {
         visionInstallState.isInstalling
     }
 
+    /// Includes the short unload hand-off before the companion installer can
+    /// start. It is distinct from the install state so the UI can explain why
+    /// no download bytes have appeared yet.
+    public var isPreparingVisionSupport: Bool {
+        pendingVisionEnableAfterUnload
+    }
+
     /// A companion operation may only begin against an unloaded model session
     /// with no other transfer in flight; the draft, transcript, and attachments
     /// are untouched by the gate.
     public var canBeginVisionCompanionOperation: Bool {
         !isRunning && !loadState.isLoading && !loadState.isReady
             && !isInstallingModel && !isVisionCompanionOperationInProgress
+            && !isLocalServerActive
+    }
+
+    /// The one-click UI action is allowed with a loaded model: it owns the
+    /// unload/install/activate/reload sequence. Lower-level mutation methods
+    /// remain gated on an already-unloaded model.
+    public var canEnableVisionPack: Bool {
+        guard isVisionRuntimeSupported else { return false }
+        guard visionInstallationStatus != .unsupportedLayout else { return false }
+        guard isModelInstalled, !isVisionPackInstalled else { return false }
+        switch visionInstallState {
+        case .readyToActivate:
+            // Activation consumes the already-prepared pack and does not need
+            // the free-space requirement used to admit another download.
+            break
+        default:
+            guard case .ready = visionInstallReadiness else { return false }
+            // The download has enough space to begin or resume.
+        }
+        guard !isRunning, !isInstallingModel,
+              !isVisionCompanionOperationInProgress,
+              !isLocalServerActive else { return false }
+        return loadState.isReady || loadState == .notLoaded
     }
 
     public var canInstallVisionPack: Bool {
@@ -463,6 +510,29 @@ public final class AppModel {
         case .recoverable: return "Saved download needs attention"
         case .installed: return "Installed"
         case .failed: return "Installation failed"
+        }
+    }
+
+    public var localServerBaseURL: URL {
+        URL(string: "http://127.0.0.1:\(localServerPort)/v1")!
+    }
+
+    public var isLocalServerActive: Bool { localServerState.isActive }
+
+    public var canStartLocalServer: Bool {
+        guard localServerClient != nil, isModelInstalled,
+              !isLocalServerActive, !isRunning, !isInstallingModel,
+              !isVisionCompanionOperationInProgress,
+              !pendingVisionEnableAfterUnload else { return false }
+        return loadState == .notLoaded || loadState.isReady
+    }
+
+    public var canStopLocalServer: Bool {
+        switch localServerState {
+        case .waitingForModelUnload, .starting, .running:
+            true
+        case .stopped, .stopping, .failed:
+            false
         }
     }
 
@@ -722,7 +792,7 @@ public final class AppModel {
     }
 
     public func setModelURL(_ url: URL) {
-        guard !isRunning else { return }
+        guard !isRunning, !isLocalServerActive else { return }
         let path = url.standardizedFileURL.path
         guard path != modelPathText else { return }
 
@@ -740,6 +810,9 @@ public final class AppModel {
         installTask = nil
         visionInstallGeneration &+= 1
         visionInstallCancellationRequested = false
+        pendingVisionEnableAfterUnload = false
+        automaticallyActivateVisionInstall = false
+        reloadModelAfterVisionInstall = false
         visionInstallTask?.cancel()
         visionInstaller.cancel()
         visionInstallTask = nil
@@ -1261,8 +1334,116 @@ public final class AppModel {
         }
     }
 
+    /// Hands the model from the app's decode service to an owned standalone
+    /// server process. A loaded app session is restored after that process is
+    /// stopped or fails, so Start/Stop behaves like one reversible mode switch.
+    public func startLocalServer() {
+        guard canStartLocalServer else { return }
+        reloadModelAfterLocalServerStops = loadState.isReady
+        localServerLog = ""
+        localServerProcessIdentifier = nil
+        if loadState.isReady {
+            pendingLocalServerStartAfterUnload = true
+            unloadModel()
+            guard loadState.isLoading else {
+                pendingLocalServerStartAfterUnload = false
+                reloadModelAfterLocalServerStops = false
+                localServerState = .failed("The app model could not be unloaded.")
+                return
+            }
+            localServerState = .waitingForModelUnload
+        } else {
+            launchLocalServer()
+        }
+    }
+
+    public func stopLocalServer() {
+        guard canStopLocalServer else { return }
+        if pendingLocalServerStartAfterUnload {
+            pendingLocalServerStartAfterUnload = false
+            localServerState = .stopped
+            restoreModelAfterLocalServerIfNeeded()
+            return
+        }
+        localServerState = .stopping
+        localServerClient?.stop()
+    }
+
+    /// Called while the app is terminating. It never looks up or signals a PID:
+    /// the client can only terminate the Process instance this app launched.
+    public func stopOwnedLocalServerForApplicationTermination() {
+        pendingLocalServerStartAfterUnload = false
+        reloadModelAfterLocalServerStops = false
+        guard isLocalServerActive else { return }
+        localServerClient?.stop()
+        localServerState = .stopped
+        localServerProcessIdentifier = nil
+    }
+
+    private func launchLocalServer() {
+        guard let localServerClient else {
+            localServerState = .failed("Server control is unavailable in this build.")
+            restoreModelAfterLocalServerIfNeeded()
+            return
+        }
+        pendingLocalServerStartAfterUnload = false
+        do {
+            try runtimeOptions.validate()
+            let configuration = AppLocalServerConfiguration(
+                modelDirectory: URL(
+                    fileURLWithPath: modelPathText,
+                    isDirectory: true),
+                port: localServerPort,
+                maxContextTokens: maxContextTokens,
+                runtimeOptions: runtimeOptions)
+            localServerState = .starting
+            try localServerClient.start(configuration: configuration) {
+                [weak self] event in
+                self?.applyLocalServerEvent(event)
+            }
+        } catch {
+            localServerState = .failed(error.localizedDescription)
+            restoreModelAfterLocalServerIfNeeded()
+        }
+    }
+
+    private func applyLocalServerEvent(_ event: AppLocalServerEvent) {
+        switch event {
+        case .launched(let processIdentifier):
+            localServerProcessIdentifier = processIdentifier
+        case .output(let text):
+            localServerLog += text
+            if localServerLog.count > 24_000 {
+                localServerLog = String(localServerLog.suffix(16_000))
+            }
+        case .ready:
+            guard localServerState == .starting else { return }
+            localServerState = .running
+        case .terminated(let exitCode):
+            let stoppedByUser = localServerState == .stopping
+            localServerProcessIdentifier = nil
+            if stoppedByUser {
+                localServerState = .stopped
+            } else {
+                localServerState = .failed(
+                    "Server exited unexpectedly (status \(exitCode)).")
+            }
+            restoreModelAfterLocalServerIfNeeded()
+        }
+    }
+
+    private func restoreModelAfterLocalServerIfNeeded() {
+        guard reloadModelAfterLocalServerStops,
+              unloadTask == nil,
+              !isLocalServerActive,
+              canLoadModel else { return }
+        reloadModelAfterLocalServerStops = false
+        loadModel()
+    }
+
     public func installModel() {
         guard !isRunning, !loadState.isLoading, !isInstallingModel,
+              !isLocalServerActive,
               requiresModelInstallation else {
             return
         }
@@ -1357,6 +1538,35 @@ public final class AppModel {
             isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
+    /// Enables image input as one UI transaction. If the text model is live,
+    /// the app releases it first and restores it only after the companion has
+    /// downloaded and passed activation verification.
+    public func enableVisionPack() {
+        guard canEnableVisionPack else { return }
+        automaticallyActivateVisionInstall = true
+        reloadModelAfterVisionInstall = loadState.isReady
+        if loadState.isReady {
+            pendingVisionEnableAfterUnload = true
+            unloadModel()
+            guard loadState.isLoading else {
+                pendingVisionEnableAfterUnload = false
+                automaticallyActivateVisionInstall = false
+                reloadModelAfterVisionInstall = false
+                return
+            }
+        } else {
+            continueEnablingVisionPack()
+        }
+    }
+
+    private func continueEnablingVisionPack() {
+        if case .readyToActivate = visionInstallState {
+            activateVisionPack()
+        } else {
+            installVisionPack()
+        }
+    }
+
     public func installVisionPack() {
         guard canInstallVisionPack else { return }
         visionInstallCancellationRequested = false
@@ -1449,10 +1659,12 @@ public final class AppModel {
         visionInstallCancellationRequested = false
         visionInstallState = .idle
         refreshVisionInstallReadiness()
+        finishVisionEnableWorkflowIfNeeded()
     }
 
     public func discardVisionPackDownload() {
         guard canDiscardVisionPackDownload else { return }
+        finishVisionEnableWorkflowIfNeeded(restoreModel: false)
         let directory = URL(fileURLWithPath: modelPathText, isDirectory: true)
             .standardizedFileURL
         visionInstallCancellationRequested = false
@@ -1486,6 +1698,7 @@ public final class AppModel {
     public func removeVisionPack() {
         isConfirmingVisionPackRemoval = false
         guard canRemoveVisionPack else { return }
+        finishVisionEnableWorkflowIfNeeded(restoreModel: false)
         let directory = URL(fileURLWithPath: modelPathText, isDirectory: true)
             .standardizedFileURL
         visionInstallCancellationRequested = false
@@ -1643,6 +1856,7 @@ public final class AppModel {
             resetVisionInstallETA()
             visionInstallState = .readyToActivate(directory)
             visionInstallTask = nil
+            activateVisionPackIfRequested()
         case .installed:
             resetVisionInstallETA()
             let textModelDirectory = URL(
@@ -1659,6 +1873,28 @@ public final class AppModel {
             }
             visionInstallState = .installed(modelDirectory: textModelDirectory)
             visionInstallTask = nil
+            finishVisionEnableWorkflowIfNeeded()
+        }
+    }
+
+    private func activateVisionPackIfRequested() {
+        guard automaticallyActivateVisionInstall else { return }
+        // Let the download stream close before replacing its task with the
+        // activation task. Both operations use a generation token, so this hop
+        // also prevents the old stream's completion from clearing the new one.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.activateVisionPack()
+        }
+    }
+
+    private func finishVisionEnableWorkflowIfNeeded(restoreModel: Bool = true) {
+        let shouldReload = restoreModel && reloadModelAfterVisionInstall
+        pendingVisionEnableAfterUnload = false
+        automaticallyActivateVisionInstall = false
+        reloadModelAfterVisionInstall = false
+        if shouldReload, canLoadModel {
+            loadModel()
         }
     }
 
@@ -1682,6 +1918,7 @@ public final class AppModel {
         visionInstallTask = nil
         visionInstallState = .cancelled
         refreshVisionInstallReadiness()
+        finishVisionEnableWorkflowIfNeeded()
     }
 
     /// Which phase failed. Only a download failure may leave a prepared pack
@@ -1725,6 +1962,7 @@ public final class AppModel {
             textModelDirectory: textModelDirectory) {
             visionInstallState = .readyToActivate(output)
             refreshVisionInstallReadiness(at: textModelDirectory)
+            activateVisionPackIfRequested()
             return
         }
         visionInstallState = hasSavedDownload
@@ -1742,6 +1980,7 @@ public final class AppModel {
                 visionInstallState = .recoverable("\(error)")
             }
         }
+        finishVisionEnableWorkflowIfNeeded()
     }
 
     private func applyInstallEvent(_ event: AppModelInstallEvent, generation: UInt64) {
@@ -3494,5 +3733,15 @@ public final class AppModel {
     private func clearUnloadTask(generation: UInt64) {
         guard generation == unloadGeneration else { return }
         unloadTask = nil
+        if pendingVisionEnableAfterUnload {
+            pendingVisionEnableAfterUnload = false
+            continueEnablingVisionPack()
+            return
+        }
+        if pendingLocalServerStartAfterUnload {
+            launchLocalServer()
+            return
+        }
+        restoreModelAfterLocalServerIfNeeded()
     }
 }

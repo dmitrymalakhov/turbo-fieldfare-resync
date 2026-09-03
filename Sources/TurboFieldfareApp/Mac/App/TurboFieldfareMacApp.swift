@@ -11,7 +11,10 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var model: AppModel?
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { Self.model?.releaseAllAttachments() }
+        MainActor.assumeIsolated {
+            Self.model?.stopOwnedLocalServerForApplicationTermination()
+            Self.model?.releaseAllAttachments()
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,6 +41,7 @@ struct TurboFieldfareMacApp: App {
     init() {
         let model = AppModel(
             client: DecodeServiceInferenceClient(),
+            localServerClient: ProcessLocalServerClient(),
             visionRuntimeSupported: AppModel.currentDeviceSupportsVisionRuntime,
             settingsPersistenceEnabled: true)
         _model = State(initialValue: model)
@@ -107,7 +111,8 @@ struct TurboFieldfareMacApp: App {
                 Button("Choose Model Folder…") {
                     ModelLocationPicker.choose(for: model)
                 }
-                .disabled(model.isRunning || model.isInstallingModel || model.loadState.isLoading)
+                .disabled(model.isRunning || model.isInstallingModel
+                    || model.loadState.isLoading || model.isLocalServerActive)
                 Button("Load Model", action: model.loadModel)
                     .disabled(!model.canLoadModel)
                 Button("Reload Model", action: model.reloadModel)

@@ -6,6 +6,19 @@ through a proxy or tunnel.
 
 ## Start the server
 
+### From the Mac app
+
+Open the right settings pane and choose **Local API → Start Server**. If the
+app model is loaded, the app unloads it before launching the server and loads
+it again after **Stop Server**. The section shows startup progress, the owned
+process ID, recent server output, and any preflight failure.
+
+Before loading the model, the app refuses to start when port 8080 is occupied
+or another TurboFieldfare/MLX model process is visible. It never replaces or
+terminates that process. The server remains bound to `127.0.0.1`.
+
+### From a terminal
+
 First, install the model with the Mac app or `TurboFieldfareRepack`. Then check
 that no other TurboFieldfare model process is running:
 

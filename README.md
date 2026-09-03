@@ -198,9 +198,9 @@ swift build -c release
 .build/release/TurboFieldfareMac
 ```
 
-Build the complete package so the app and its sibling decode service are both
-available. When launched from this checkout, the app stores the model in
-`scratch/gemma4.gturbo`.
+Build the complete package so the app, its sibling decode service, and the
+managed local-server executable are all available. When launched from this
+checkout, the app stores the model in `scratch/gemma4.gturbo`.
 
 To reuse a model from another checkout or disk, choose **Model → Choose Model
 Folder…** and select the `.gturbo` directory that contains `manifest.json`.
@@ -230,7 +230,8 @@ After installation:
 
 1. Enter a prompt in the composer.
 2. Optionally use the paperclip or drag and drop to attach text, PDF, DOCX,
-   PPTX, or XLSX files.
+   PPTX, or XLSX files. Once Image Support is enabled, use the image button,
+   paste, or drag and drop to attach supported images.
 3. Choose **Load & Send**. Once loaded, the same control reads **Send**. You
    can also press <kbd>Command</kbd>+<kbd>Return</kbd>. Use
    **Settings > Send Message With** to choose Return or Command-Return.
@@ -300,7 +301,10 @@ The pack adds about 1.1 GB. Verify it with `--verify-vision-install`, remove an
 installed one with `--remove-vision-install`, and drop a cancelled download with
 `--discard-partial --vision-output <dir>`. A cancelled transfer can also be
 continued with `--resume`. The Mac app installs the same pack from its
-**Image Support** section.
+**Image Support** section. Its **Enable** action handles the whole transition:
+if necessary it unloads the text model, downloads and activates the companion,
+and then restores the previously loaded model. The image attachment control
+appears in the composer as soon as the pack is active.
 
 #### Send an image
 
@@ -371,7 +375,14 @@ machine-readable footer, or `--quiet` to suppress the footer in scripts. Pass
 
 ### Local OpenAI-compatible server
 
-Build the server and point it at an installed model:
+In the Mac app, open the right pane and use **Local API → Start Server**. The
+app unloads its own model first, verifies that port 8080 and the machine are not
+already being used by another model process, and starts an owned server on
+`http://127.0.0.1:8080/v1`. **Stop Server** stops only that owned process and
+restores the app model when it was loaded before the hand-off. Startup output
+and failures are available in the same section.
+
+For terminal operation, build the server and point it at an installed model:
 
 ```bash
 swift build -c release --product TurboFieldfareServer
