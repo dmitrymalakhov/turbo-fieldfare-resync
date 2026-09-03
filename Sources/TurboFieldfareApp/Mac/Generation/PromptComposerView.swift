@@ -9,9 +9,8 @@ struct PromptComposerView: View {
     @Bindable var model: AppModel
     @FocusState private var promptFocused: Bool
     @State private var showingPromptTips = false
-    @State private var showingImagePicker = false
+    @State private var showingAttachmentPicker = false
     @State private var isImageDropTargeted = false
-    @State private var isImportingDocuments = false
     @State private var isExtractingDocuments = false
     @State private var documentImportError: String?
     @State private var previewedAttachment: AppPromptAttachment?
@@ -38,15 +37,10 @@ struct PromptComposerView: View {
             footer
         }
         .fileImporter(
-            isPresented: $showingImagePicker,
-            allowedContentTypes: VisionImageLimits().allowedContentTypes,
+            isPresented: $showingAttachmentPicker,
+            allowedContentTypes: attachmentPickerContentTypes,
             allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls): model.addImages(urls)
-            case .failure(let error): model.reportImageAttachmentError(error)
-            }
-        }
+        ) { handleAttachmentSelection($0) }
         .padding(14)
         .background {
             RoundedRectangle(cornerRadius: 22)
@@ -56,11 +50,6 @@ struct PromptComposerView: View {
                         .stroke(.separator.opacity(0.5), lineWidth: 0.5)
                 }
         }
-        .fileImporter(
-            isPresented: $isImportingDocuments,
-            allowedContentTypes: DocumentTextExtractor.supportedContentTypes,
-            allowsMultipleSelection: true,
-            onCompletion: handleDocumentSelection)
         .dropDestination(for: URL.self) { urls, _ in
             guard model.canEditSelectedChat, !urls.isEmpty else { return false }
             importDocuments(urls)
@@ -149,23 +138,7 @@ struct PromptComposerView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.isImageInputAvailable {
-                Button {
-                    showingImagePicker = true
-                } label: {
-                    Label("Add images", systemImage: "photo.badge.plus")
-                        .labelStyle(.iconOnly)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.isRunning || model.isAddingImages
-                    || model.imageAttachments.count
-                        >= model.maximumImageAttachments)
-                .help(model.maximumImageAttachments == 0
-                    ? "Start a new chat to make room for images."
-                    : "Add images")
-            }
-            attachDocumentAction
+            attachmentAction
             promptTips
             contextControl
             Spacer()
@@ -257,17 +230,17 @@ struct PromptComposerView: View {
         .scrollIndicators(.hidden)
     }
 
-    private var attachDocumentAction: some View {
+    private var attachmentAction: some View {
         Button {
             documentImportError = nil
-            isImportingDocuments = true
+            showingAttachmentPicker = true
         } label: {
             Group {
                 if isExtractingDocuments {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Label("Attach documents", systemImage: "paperclip")
+                    Label("Attach", systemImage: "paperclip")
                         .labelStyle(.iconOnly)
                 }
             }
@@ -277,10 +250,55 @@ struct PromptComposerView: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .disabled(!model.canEditSelectedChat || isExtractingDocuments)
-        .help("Attach text, PDF, Word, PowerPoint, or Excel files")
+        .help(attachmentActionHelp)
         .accessibilityLabel(isExtractingDocuments
                             ? "Extracting document text"
-                            : "Attach documents")
+                            : "Attach files")
+    }
+
+    private var canChooseImages: Bool {
+        model.isImageInputAvailable
+            && !model.isRunning
+            && !model.isAddingImages
+            && model.imageAttachments.count < model.maximumImageAttachments
+    }
+
+    private var attachmentPickerContentTypes: [UTType] {
+        let documents = DocumentTextExtractor.supportedContentTypes
+        guard canChooseImages else { return documents }
+        let images = VisionImageLimits().allowedContentTypes
+        return (documents + images).reduce(into: []) { result, type in
+            if !result.contains(type) { result.append(type) }
+        }
+    }
+
+    private var attachmentActionHelp: String {
+        if canChooseImages {
+            return "Attach images, text, PDF, Word, PowerPoint, or Excel files"
+        }
+        return "Attach text, PDF, Word, PowerPoint, or Excel files"
+    }
+
+    private func handleAttachmentSelection(
+        _ result: Result<[URL], any Error>
+    ) {
+        switch result {
+        case .failure(let error):
+            documentImportError = error.localizedDescription
+        case .success(let urls):
+            let imageTypes = VisionImageLimits().allowedContentTypes
+            let images = urls.filter { url in
+                guard let type = UTType(filenameExtension: url.pathExtension)
+                else { return false }
+                return imageTypes.contains { type.conforms(to: $0) }
+            }
+            let imageURLs = Set(images.map(\.standardizedFileURL))
+            let documents = urls.filter {
+                !imageURLs.contains($0.standardizedFileURL)
+            }
+            if !images.isEmpty { model.addImages(images) }
+            if !documents.isEmpty { importDocuments(documents) }
+        }
     }
 
     private var promptTips: some View {

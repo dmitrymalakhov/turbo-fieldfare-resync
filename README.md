@@ -230,8 +230,8 @@ After installation:
 
 1. Enter a prompt in the composer.
 2. Optionally use the paperclip or drag and drop to attach text, PDF, DOCX,
-   PPTX, or XLSX files. Once Image Support is enabled, use the image button,
-   paste, or drag and drop to attach supported images.
+   PPTX, or XLSX files. Once Image Support is enabled, the same paperclip also
+   accepts supported images; images can still be pasted or dragged in.
 3. Choose **Load & Send**. Once loaded, the same control reads **Send**. You
    can also press <kbd>Command</kbd>+<kbd>Return</kbd>. Use
    **Settings > Send Message With** to choose Return or Command-Return.
