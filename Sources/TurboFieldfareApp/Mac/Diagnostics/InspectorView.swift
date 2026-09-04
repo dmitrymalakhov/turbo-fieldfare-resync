@@ -4,6 +4,7 @@ import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct InspectorView: View {
+    @Environment(\.openWindow) private var openWindow
     @Bindable var model: AppModel
     @State private var showsAdvancedControls = false
 
@@ -19,6 +20,13 @@ struct InspectorView: View {
             contextSection
             advancedSection
             localAPISection
+            Section("Connections") {
+                Button { openWindow(id: "mcp-connections") } label: {
+                    Label("Manage MCP Connections…", systemImage: "puzzlepiece.extension")
+                }
+                Text("Connect MCP servers, manage credentials and choose tools.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             RunnerDiagnosticsSection(diagnostics: model.diagnostics)
         }
         .formStyle(.grouped)

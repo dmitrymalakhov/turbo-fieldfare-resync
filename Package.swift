@@ -69,6 +69,7 @@ let package = Package(
             path: "Sources/TurboFieldfareApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),
+                .copy("Resources/ExchangeMCP"),
             ]
         ),
         .target(

@@ -126,6 +126,8 @@ public final class AppModel {
     /// looking at their own attachments while the model worked.
     public private(set) var runIdentity: Int = 0
     public private(set) var presentationExportRequest: AppPresentationExportRequest?
+    public var promptContextProvider: (any AppPromptContextProviding)?
+    public private(set) var externalContextProgress: String?
 
     private let client: any AppInferenceClient
     private let installer: any AppModelInstallerClient
@@ -2826,8 +2828,77 @@ public final class AppModel {
         let visiblePrompt = promptDisplayText(
             prompt: promptText,
             attachments: promptAttachments)
+        let submittedPrompt = promptText
+        let recentUserPrompts = Array(selectedChat.messages.filter { $0.role == .user }.suffix(5).map(\.content))
         beginRunState(request: request, visiblePrompt: visiblePrompt)
 
+        if let provider = promptContextProvider {
+            let generation = runIdentity
+            runTask = Task { [weak self, request] in
+                guard let self else { return }
+                do {
+                    let context = try await provider.prepare(prompt: submittedPrompt, recentUserPrompts: recentUserPrompts) { [weak self] message in
+                        guard let self, self.runIdentity == generation, self.isRunning else { return }
+                        self.externalContextProgress = message
+                    }
+                    try Task.checkCancellation()
+                    guard runIdentity == generation, isRunning, !isCancellationPending else { throw CancellationError() }
+                    var prepared = request
+                    var display = visiblePrompt
+                    if let context {
+                        let fit = try await fitExternalPromptContext(context, into: request)
+                        try Task.checkCancellation()
+                        prepared = fit.request
+                        display += "\n\n[\(context.summary)]"
+                        if fit.truncated { display += "\n[Часть загруженного текста не поместилась в контекст модели.]" }
+                        outputPromptText = display
+                    }
+                    externalContextProgress = nil
+                    prepareAndLaunchRun(prepared, visiblePrompt: display)
+                } catch {
+                    guard runIdentity == generation, isRunning, activeRunChatID == nil else { return }
+                    conversation.abandonTurn()
+                    for image in outputImageAttachments { attachmentStore.remove(image) }
+                    outputImageAttachments = []
+                    let failure: AppInferenceError = error is CancellationError || Task.isCancelled
+                        ? .cancelled : (error as? AppInferenceError ?? .invalidRequest(error.localizedDescription))
+                    finishUncommittedRun(failure)
+                }
+            }
+        } else {
+            prepareAndLaunchRun(request, visiblePrompt: visiblePrompt)
+        }
+    }
+
+    private func fitExternalPromptContext(_ context: AppExternalPromptContext,
+                                          into request: AppGenerationRequest) async throws -> (request: AppGenerationRequest, truncated: Bool) {
+        guard let pending = request.messages.last else { throw AppInferenceError.invalidRequest("Prompt is missing.") }
+        var budget = max(0, transportCharacterBudget - pending.content.count - 1_000)
+        while budget > 0 {
+            try Task.checkCancellation()
+            let content = AppPromptContext.compose(userPrompt: pending.content, attachments: [context.attachment],
+                                                   maximumAttachmentCharacters: budget)
+            var probe = request
+            probe.messages = [AppGenerationMessage(role: .user, content: content)]
+            do {
+                // Probe only the current turn. The normal preparation stage
+                // handles history compression after the external data fits.
+                if let reporter = client as? any AppGenerationContextReporting {
+                    _ = try await reporter.prepareWithContextReport(probe)
+                } else if let preparer = client as? any AppGenerationRequestPreparing {
+                    _ = try await preparer.prepare(probe)
+                }
+                let fitted = buildRequestContext(template: request, pendingMessage: probe.messages[0]).request
+                return (fitted, context.attachment.characterCount > budget)
+            } catch let failure as AppInferenceError {
+                guard case .contextOverflow = failure else { throw failure }
+                budget /= 2
+            }
+        }
+        throw AppInferenceError.invalidRequest("Данные прочитаны, но их текст не помещается вместе с запросом в контекст модели. Сократи запрос или выбери более узкий период.")
+    }
+
+    private func prepareAndLaunchRun(_ request: AppGenerationRequest, visiblePrompt: String) {
         if let reporter = client as? any AppGenerationContextReporting {
             runTask = Task.detached { [weak self, reporter, request] in
                 do {
@@ -2876,6 +2947,7 @@ public final class AppModel {
         request: AppGenerationRequest,
         visiblePrompt: String
     ) {
+        externalContextProgress = nil
         generationTranscriptMailbox?.reset()
         runIdentity &+= 1
         outputPromptText = visiblePrompt
@@ -3525,6 +3597,7 @@ public final class AppModel {
         appendAssistantMessageIfNeeded()
         finishPresentationExportIfNeeded(completedChatID: completedChatID)
         phase = .idle
+        externalContextProgress = nil
         runState = .idle
         isCancellationPending = false
         activeRunRuntimeKey = nil

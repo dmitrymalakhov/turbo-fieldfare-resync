@@ -65,6 +65,8 @@ struct GenerateControl: View {
                 if model.isCancellationPending {
                     Text("Stopping")
                         .font(.callout.weight(.medium))
+                } else if model.externalContextProgress != nil {
+                    Text("Loading data…").font(.callout.weight(.medium))
                 } else if model.phase == .prefill || model.phase == .compressing {
                     Text(model.presentation.label)
                         .font(.callout.weight(.medium))

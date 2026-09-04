@@ -1,0 +1,213 @@
+# MCP connections in the Mac app
+
+Open **MCP Connections** with **⌘,**, the puzzle-piece button in the top bar, or
+**Settings → MCP Connections…**. Connections are shared across chats and model
+locations. Starting a connector does not load another inference model.
+
+The **Overview** is the common home for all MCP servers. It shows saved servers,
+connection states and the number of configured enabled tools. Open **Manage** or
+select a server in the sidebar to edit its settings, credentials and tools.
+Use **Overview** in the sidebar to return to the full list.
+
+**Add MCP Server** and the sidebar **+** open the same setup flow. Choose
+**MCP Server** for a custom local connection, or a service preset. Exchange is one
+preset in this list. Its mail/calendar controls appear only within that connection.
+
+## Exchange setup
+
+1. Choose **Add MCP Server → Microsoft Exchange** under **Service Presets**.
+2. Enter a name, Exchange host such as `mail.company.com`, mailbox address,
+   sign-in username such as `DOMAIN\username`, and password.
+3. Choose NTLM or Basic over TLS. NTLM is the default, matching the colleague
+   connector this integration is based on. Set the mailbox time zone;
+   `Europe/Moscow` is the default. Save the connection.
+4. Choose **Install Connector**. A detected Python executable is prefilled;
+   choose another Python 3.10+ executable if needed. Installation downloads
+   pinned Python dependencies into a private environment under
+   `~/Library/Application Support/TurboFieldfare/MCP/exchange-0.2.0/`.
+5. Choose **Connect & Verify**. The app initializes MCP, discovers tools, and
+   verifies actual Inbox read access. “Connected” means all three succeeded.
+
+The Exchange endpoint is EWS; enter its hostname without `https://` or
+`/EWS/Exchange.asmx`. VPN may be required by the organization. For a corporate
+certificate authority, choose its PEM CA bundle under **Advanced**. TLS
+verification stays enabled. There is no OAuth/Graph flow in this connector.
+
+Credentials are stored in macOS Keychain (`TurboFieldfare.MCP`). They are passed
+only to the connector process, not to Gemma, command-line arguments or profile
+JSON. The **Authentication** card opens the editing form. The connection menu
+also provides **Forget Credentials** and **Remove Connection**.
+
+Profiles live in
+`~/Library/Application Support/TurboFieldfare/mcp-connections.json`.
+An unreadable or unsupported profile file is preserved and reported.
+Connections start disconnected on launch. **Disconnect** and app termination
+stop processes owned by this manager. Existing Outlook or model processes are
+not affected.
+
+## Request mail directly in chat
+
+After saving and installing the Exchange connection, send an ordinary chat
+message such as **«Разбери почту за сегодня»**, **«Что важного в письмах за
+неделю?»**, **«Покажи письма за вчера»**, or **“Summarize my email this week”**.
+The app resolves the requested period, connects and verifies the saved account if
+needed, reads the mail and adds it to the model's reference context before
+generating the answer. Progress and cancellation are available in the composer.
+The sent message displays the account, period, folder and loaded-message count.
+Before inference, the app checks whether the new reference text fits with the
+current prompt. If necessary it reduces the included text, marks it as truncated
+for the model and visibly reports that part of the loaded text did not fit.
+The loaded-message count is not a claim that every loaded body was analyzed.
+
+An explicit mail-reading request without a period defaults to today. **«А за
+неделю?»** can follow a mail request in the same chat. With multiple accounts,
+include the connection name or mailbox address in the request; a follow-up retains
+the account from the preceding retrieval when identifiable. The default folder is
+Inbox; “отправленные письма” selects Sent, and **из папки «Проект»** selects a
+named folder. Straight quotes around the folder name also work.
+
+Routing is intentionally limited to direct mail requests for today, yesterday
+and the current week. Unsupported or conflicting periods request clarification
+before mailbox access. Setup questions, quoted examples, explicit negation and
+requests to analyze already attached mail do not trigger a new read. Only the
+user's visible message and preceding user message inform routing; email bodies,
+attachments and model output cannot authorize tool calls. This is a dedicated
+mail request resolver, not a general model-driven MCP tool loop.
+
+Missing configuration, failed sign-in and disabled mail tools stop submission
+with an error and preserve the draft. No answer is generated as though mail had
+been read. Cancelling retrieval also preserves the request. Mail remains read-only.
+
+## Read mail manually and add it to a chat
+
+Select **Today**, **Yesterday**, or **This Week**, select a folder, then choose
+**Load Mail**. The default folder is Inbox, excluding subfolders. Today means
+midnight to the first request; yesterday is the previous calendar day; this
+week means Monday midnight to the first request, in the configured time zone.
+Selecting Sent/Sent Items uses the sent timestamp.
+
+The app follows result pages and full-message body continuations. It displays
+progress and supports cancellation. Dates are filtered on Exchange before
+paging; the original last-100-messages search limitation is removed. A local
+import budget of 300,000 characters or 1,000 messages produces an explicit
+incomplete-import notice. Live folder moves/deletions can shift EWS offsets;
+the mailbox is not an immutable snapshot.
+
+Review the loaded text, then choose **Add to Chat**. Mail is added as a reference
+attachment to the selected chat, with a suggested analysis prompt if its draft
+is empty. Generation starts only when the user sends the message. The existing
+context budget may shorten a large attachment, with the existing truncation
+marker; use narrower periods/folders when necessary. Email instructions are
+treated as quoted reference content. Attachments inside emails are not fetched.
+
+The Exchange connector exposes only `list_messages`, `get_message`,
+`list_calendar_events` and an internal `check_connection`. It implements no
+sending, editing, deleting, marking read or file-download operations. The app
+also enforces a fixed Exchange tool allowlist, independently of advertised
+`readOnlyHint` values. Tool switches are persisted and enforced on every call.
+Account permissions themselves remain the normal Exchange permissions.
+
+## Other local MCP servers
+
+Choose **Add MCP Server → MCP Server**. Select an executable, put each argument on its
+own line, optionally select a working directory, and add environment variables.
+Environment values are stored in Keychain. Executables run directly without a
+shell; paths must be absolute. Connect to discover tools and explicitly enable
+the tools you want available for that connection.
+
+This interface manages local stdio servers. Remote HTTP/OAuth connections and
+general model-driven tool loops are not implemented. Exchange supports direct
+mail requests from chat and manual mail-to-chat import; other servers currently
+have configuration, connection checking, discovery, tool controls and manual
+test requests.
+
+## Test a connection and inspect data
+
+Open a server and choose **Test Data…** beside its connection status. The test
+window is available for every MCP connection and does not load an inference model.
+
+1. If disconnected, choose **Connect & Verify** to authenticate and discover tools.
+2. Select a tool. Disabled tools remain disabled; enable the intended tool in the
+   server's **Tools** section first.
+3. Review **Parameters · JSON**. Defaults and required fields are generated from
+   the tool's schema; fill any required values. Expand **Parameter schema** for
+   the full schema, including descriptions and allowed values.
+4. Choose **Run Test**. The result shows the returned data, tool name, elapsed
+   time, response size and receipt time. Expand **Parameters used for this
+   response** to inspect the exact request, even after editing the next request.
+
+For Exchange, **Today**, **Yesterday** and **This Week** prepare a sample of up
+to three Inbox messages without bodies. Press **Run Test** to fetch it; selecting
+a preset does not access the mailbox. The tester sends one request and does not
+follow pagination. The JSON can be edited to change the folder or sample size.
+All requests enforce the same Exchange read-only allowlist and tool switches
+as chat/mail import, independently of server annotations.
+
+Structured data and ordinary text responses are supported. **Show full MCP
+envelope** reveals the original tool result. A tool-reported `isError` response
+is displayed as **Tool error**, with its returned content. Connection failures
+and invalid input are shown separately. An empty collection explicitly shows
+zero items; a successful connection alone does not claim that mail was found.
+
+The view displays server text as inert text, without loading images or links.
+The preview is limited to 50,000 characters; **Copy JSON** explicitly copies the
+complete tool response to the clipboard. Results are held only in memory and
+cleared on closing the window. No diagnostics are automatically logged or added
+to chat. **Cancel** stops waiting and suppresses late responses; the server may
+already have processed a request. Generic MCP tools can have side effects and
+are described according to their server's annotations, not guaranteed read-only.
+
+## Implementation and validation
+
+- AppCore `MCP/`: profiles, Keychain persistence, process ownership, MCP stdio
+  lifecycle, tool policy, Exchange installation and mail import.
+- MacPresentation `MCP/`: connection list, authentication form, tools and mail UI.
+- `Resources/ExchangeMCP`: bundled adaptation of the supplied colleague archive
+  `3fd1d62c85451c914d83183fccce46ab998731bc`, with exact Python dependency versions.
+- `AppMCPTests`: persistence without secrets, Exchange authentication, tool
+  policy, reconnect settings, full paging, corrupt-file preservation and real
+  stdio framing/cancellation against a synthetic server; chat-to-mail-to-inference
+  flow, follow-ups, cancellation, retry after failed sign-in, account selection
+  and fitting large reference text before inference; diagnostic responses for
+  plain text, errors, empty collections, invalid input, cancellation and paging.
+- `AppMCPMailIntentTests`: Russian/English period requests, follow-ups, folder
+  selection, rejected dates/write requests and non-mail messages that must not
+  access a mailbox.
+- `MCPConnectionsPresentationTests`: offscreen rendering of the common overview,
+  empty state, server picker, local-server settings, Exchange detail and
+  authentication form, plus diagnostic request/data/error states without loading a model.
+
+```sh
+Scripts/test.sh --filter 'AppMCPTests|AppMCPMailIntentTests|MCPConnectionsPresentationTests'
+swift build -c release
+```
+
+These tests do not contact corporate Exchange or exercise the live Keychain.
+Actual corporate authentication remains to be checked using the user's local
+credentials. No mail is included in fixtures or screenshots.
+
+### Read-only audit
+
+`Scripts/test-exchange-readonly.py` exercises the bundled connector with the
+actual pinned `exchangelib` library and synthetic EWS responses. It records the
+generated EWS operations and rejects anything except `FindItem` and `GetItem`.
+All HTTP requests are blocked by the test. It covers authentication checking,
+today/yesterday/week mail queries, Sent, search, body reading and calendar access.
+An unread fixture requesting a read receipt causes no update or receipt operation;
+HTML tracking images are not loaded. Explicit calendar offsets are normalized to
+UTC before passing them to the EWS library.
+
+```sh
+scratch/exchange-mcp-readonly/.venv/bin/python Scripts/test-exchange-readonly.py
+Scripts/test.sh --filter AppMCPTests
+```
+
+Use another Python executable with the pinned dependencies if the scratch
+environment is absent. The Python audit rejects 20 forbidden tool names at the
+server boundary. The Swift test rejects the same 20 names before dispatch,
+including with forged read-only annotations and a saved profile that enables them.
+
+This assessment applies to the bundled Exchange connector and its Exchange
+profile policy. A manually substituted executable or a generic local MCP is not
+made read-only by a tool annotation. Normal Exchange account permissions remain
+unchanged; no server-side read-only role is provisioned by this application.

@@ -3,6 +3,7 @@ import TurboFieldfareMacPresentation
 import SwiftUI
 
 struct StatusHUDView: View {
+    @Environment(\.openWindow) private var openWindow
     let model: AppModel
     let isChatSidebarVisible: Bool
     let isInspectorVisible: Bool
@@ -45,6 +46,11 @@ struct StatusHUDView: View {
                     InfoPopoverButton(subject: "Memory", text: memoryHelp, arrowEdge: .bottom)
                 }
             }
+            Button { openWindow(id: "mcp-connections") } label: {
+                Label("Connections", systemImage: "puzzlepiece.extension")
+                    .labelStyle(.iconOnly).frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless).help("Manage MCP servers, credentials and tools")
             inspectorToggle
         }
         .frame(height: 30)

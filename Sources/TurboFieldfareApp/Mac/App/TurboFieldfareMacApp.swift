@@ -9,11 +9,13 @@ import SwiftUI
 private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the scene so quitting can release this session's staged images.
     @MainActor static var model: AppModel?
+    @MainActor static var mcpManager: AppMCPManager?
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             Self.model?.stopOwnedLocalServerForApplicationTermination()
             Self.model?.releaseAllAttachments()
+            Self.mcpManager?.stopAll()
         }
     }
 
@@ -35,6 +37,8 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
 struct TurboFieldfareMacApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: ForegroundAppDelegate
     @State private var model: AppModel
+    @State private var mcpManager: AppMCPManager
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(AppAppearance.storageKey)
     private var appearanceRawValue = AppAppearance.system.rawValue
 
@@ -45,7 +49,13 @@ struct TurboFieldfareMacApp: App {
             visionRuntimeSupported: AppModel.currentDeviceSupportsVisionRuntime,
             settingsPersistenceEnabled: true)
         _model = State(initialValue: model)
-        MainActor.assumeIsolated { ForegroundAppDelegate.model = model }
+        let mcpManager = AppMCPManager.production()
+        _mcpManager = State(initialValue: mcpManager)
+        MainActor.assumeIsolated {
+            model.promptContextProvider = AppMCPPromptContextProvider(manager: mcpManager)
+            ForegroundAppDelegate.model = model
+            ForegroundAppDelegate.mcpManager = mcpManager
+        }
     }
 
     var body: some Scene {
@@ -80,6 +90,10 @@ struct TurboFieldfareMacApp: App {
         .defaultSize(width: 1280, height: 760)
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("MCP Connections…") { openWindow(id: "mcp-connections") }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .appInfo) {
                 Button("About TurboFieldfare") {
                     NSApp.orderFrontStandardAboutPanel(
@@ -131,6 +145,8 @@ struct TurboFieldfareMacApp: App {
                     .disabled(!model.canRemoveVisionPack)
             }
             CommandMenu("Settings") {
+                Button("MCP Connections…") { openWindow(id: "mcp-connections") }
+                Divider()
                 Picker("Send Message With", selection: newlineShortcutBinding) {
                     ForEach(AppNewlineShortcut.sendMessageOptions) { shortcut in
                         Text(shortcut.sendMessageLabel).tag(shortcut)
@@ -154,6 +170,25 @@ struct TurboFieldfareMacApp: App {
                 }
             }
         }
+
+        Window("MCP Connections", id: "mcp-connections") {
+            MCPConnectionsView(manager: mcpManager) { snapshot in
+                guard model.canEditSelectedChat else {
+                    mcpManager.error = "Wait for the current operation to finish before adding mail to the chat."
+                    return
+                }
+                model.addPromptAttachment(AppPromptAttachment(
+                    fileName: "Exchange \(snapshot.period)", formatLabel: "Mail",
+                    extractedText: snapshot.text, wasTruncatedDuringExtraction: !snapshot.complete))
+                if model.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    model.promptText = "Проанализируй приложенные письма: выдели важное, задачи и сроки. Укажи, какой период и папки охвачены."
+                }
+                openWindow(id: "main")
+            }
+            .preferredColorScheme(AppAppearance.resolve(appearanceRawValue).preferredColorScheme)
+        }
+        .defaultSize(width: 980, height: 760)
+        .windowResizability(.contentMinSize)
     }
 
     private var modelRevealTarget: ModelRevealTarget {

@@ -21,6 +21,12 @@ struct PromptComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let progress = model.externalContextProgress {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(progress).font(.callout).foregroundStyle(.secondary)
+                }
+            }
             if !model.imageAttachments.isEmpty || model.imageAttachmentError != nil {
                 imageAttachmentStrip
             }
