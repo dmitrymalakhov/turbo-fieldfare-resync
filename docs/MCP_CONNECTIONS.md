@@ -77,8 +77,43 @@ other data that server chose to log. Copying is an explicit local clipboard acti
 
 The Exchange endpoint is EWS; enter its hostname without `https://` or
 `/EWS/Exchange.asmx`. VPN may be required by the organization. For a corporate
-certificate authority, choose its PEM CA bundle under **Advanced**. TLS
-verification stays enabled. There is no OAuth/Graph flow in this connector.
+certificate authority, open **Certificates → Choose Certificates… → Choose from
+Keychain…**. Search by name, issuer or SHA-256 fingerprint, select the corporate
+issuing CA(s), then **Use Selected Certificates → Save & Verify**. A shortcut
+also appears beside certificate-related connection errors. The certificate
+section is also available when creating or editing an Exchange connection.
+
+The picker reads public certificates from the Mac's keychain search list and
+user, administrator and system certificate trust domains. It displays issuer,
+expiry and fingerprint, removes duplicates and rejects expired, not-yet-valid
+and non-CA certificates. It does not read private keys, modify Keychain trust,
+perform trust evaluation or fetch certificates/revocation information over the
+network. Selecting a CA explicitly adds trust for this Exchange connection;
+this is not automatic mirroring of all macOS trust policies.
+
+**Choose File…** accepts a PEM certificate bundle or a DER-encoded CER/CRT/DER
+file; it checks the contents rather than relying on the extension. Files must
+contain only CA certificates (no private keys or P12/PFX identities), at most
+128 certificates and 1 MB. Selected public certificates are copied into the
+connection profile, so moving the original file does not break the connection.
+After certificate renewal, select the replacement. Existing manually configured
+PEM paths still work and are validated at connection time.
+
+**Save & Verify** disconnects the previous session, saves the selection without
+changing credentials and checks Exchange again. The app creates a private,
+per-connection PEM under `MCP/Certificates/` beside the profiles file and passes
+its path only to that Exchange process as `REQUESTS_CA_BUNDLE`. Existing bundled
+connectors support this; reinstalling Python or the connector is unnecessary.
+Diagnostics show a separate **Prepare Exchange TLS certificates** step. A
+missing, invalid or expired certificate stops connection before MCP starts.
+Preparing the file is not a claim that the server's chain is valid; only the
+subsequent Exchange verification can establish that.
+
+**Use Default Certificates** restores Python's default CA bundle, which may not
+include a corporate CA installed in macOS. This does not disable TLS: certificate
+chain, validity and hostname verification stay enabled in both modes. No TLS
+bypass is offered. Package-installation trust for pip is separate. There is no
+OAuth/Graph flow in this connector.
 
 Credentials are stored in macOS Keychain (`TurboFieldfare.MCP`). They are passed
 only to the connector process, not to Gemma, command-line arguments or profile
@@ -220,6 +255,9 @@ are described according to their server's annotations, not guaranteed read-only.
 - `AppMCPMailIntentTests`: Russian/English period requests, follow-ups, folder
   selection, rejected dates/write requests and non-mail messages that must not
   access a mailbox.
+- `AppMCPCertificatesTests`: public certificate parsing, validity and CA checks,
+  rejection of private keys/malformed or oversized files, per-connection PEM
+  preparation, copied selections and compatibility with existing profiles.
 - `MCPConnectionsPresentationTests`: offscreen rendering of the common overview,
   empty state, server picker, local-server settings, Exchange detail and
   authentication form, plus diagnostic request/data/error states without loading a model.
@@ -232,6 +270,16 @@ swift build -c release
 These tests do not contact corporate Exchange or exercise the live Keychain.
 Actual corporate authentication remains to be checked using the user's local
 credentials. No mail is included in fixtures or screenshots.
+
+`Scripts/test-exchange-tls.py` uses the installed, pinned Python dependencies to
+check the actual Exchange Requests session's CA setting and TLS handshakes over
+in-memory BIOs (no sockets). A selected CA succeeds; an unknown CA, wrong hostname
+and expired server certificate fail. An optional PEM argument also verifies an
+actual app-exported bundle can be loaded by the Python TLS stack:
+
+```sh
+scratch/exchange-mcp-readonly/.venv/bin/python Scripts/test-exchange-tls.py
+```
 
 ### Read-only audit
 

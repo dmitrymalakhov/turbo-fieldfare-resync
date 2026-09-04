@@ -115,6 +115,41 @@ struct AppMCPTests {
         #expect(try store.load().isEmpty)
     }
 
+    @Test func certificateChoiceReachesOnlyExchangeAndCanBeResetWithoutChangingCredentials() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let secrets = MCPTestSecrets(), client = MCPTestClient(), value = profile()
+        let manager = AppMCPManager(store: store, secrets: secrets, factory: { client })
+        try manager.save(value, credentials: .init(password: "test-password"))
+        let selection = AppMCPCertificateSelection(certificates: [MCPCertificateFixtures.root], source: "Keychain")
+        try manager.setCertificates(selection, for: value.id)
+        #expect(try store.load().first?.selectedCertificates == selection)
+        #expect(secrets.values[value.id]?.password == "test-password")
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        #expect(manager.status(value.id) == .connected)
+        #expect(client.environment["EXCHANGE_VERIFY_SSL"] == "true")
+        let bundle = try #require(client.environment["REQUESTS_CA_BUNDLE"])
+        #expect(try AppMCPCertificates.decode(Data(contentsOf: URL(fileURLWithPath: bundle))).map(\.der) == [MCPCertificateFixtures.root])
+        #expect(manager.diagnostics[value.id]?.text.contains("Source: Keychain") == true)
+        try manager.setCertificates(nil, for: value.id)
+        #expect(manager.status(value.id) == .disconnected)
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        #expect(client.environment["REQUESTS_CA_BUNDLE"] == nil)
+        #expect(client.environment["EXCHANGE_VERIFY_SSL"] == "true")
+        manager.stopAll()
+    }
+
+    @Test func missingCertificateFailsBeforeStartingMCPOrSendingCredentials() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let secrets = MCPTestSecrets(), client = MCPTestClient()
+        let manager = AppMCPManager(store: store, secrets: secrets, factory: { client })
+        var value = profile(); value.certificateBundle = store.fileURL.deletingLastPathComponent().appendingPathComponent("missing.pem").path
+        try manager.save(value, credentials: .init(password: "test-password"))
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        if case .failed = manager.status(value.id) {} else { Issue.record("Missing certificate must stop connection") }
+        #expect(client.environment.isEmpty && client.calls.isEmpty)
+        #expect(manager.diagnostics[value.id]?.steps.last?.title == "Prepare Exchange TLS certificates")
+    }
+
     @Test func exchangeConnectionChecksMailboxAndFiltersEvenMislabelledSendTool() async throws {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let secrets = MCPTestSecrets(), client = MCPTestClient(), value = profile()

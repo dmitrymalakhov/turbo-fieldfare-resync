@@ -8,6 +8,7 @@ public struct MCPConnectionsView: View {
     @State private var selection: UUID?
     @State private var addingConnection = false
     @State private var editing: AppMCPProfile?
+    @State private var editingCertificates: AppMCPProfile?
     @State private var testing: AppMCPProfile?
     @State private var removing: AppMCPProfile?
     @State private var period = "today"
@@ -37,6 +38,9 @@ public struct MCPConnectionsView: View {
         .onDisappear { stopReading() }
         .sheet(item: $editing) { profile in
             MCPProfileEditor(profile: profile, manager: manager, saved: { selection = $0 })
+        }
+        .sheet(item: $editingCertificates) { profile in
+            MCPCertificateEditor(profile: profile, manager: manager)
         }
         .sheet(item: $testing) { profile in
             MCPConnectionTestView(manager: manager, profileID: profile.id)
@@ -162,6 +166,9 @@ public struct MCPConnectionsView: View {
                     if case .failed(let message) = manager.status(profile.id) {
                         Text(message.components(separatedBy: "\n").first ?? message)
                             .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                        if profile.kind == .exchange, message.localizedCaseInsensitiveContains("certificate") {
+                            Button("Choose Certificates…") { editingCertificates = profile }
+                        }
                     }
                     if profile.kind == .exchange, let python = manager.pythonInfo[profile.id] {
                         Label("Last Python check: \(python.version) · passed", systemImage: "checkmark.circle.fill")
@@ -178,6 +185,14 @@ public struct MCPConnectionsView: View {
                 }
 
                 if profile.kind == .exchange {
+                    card {
+                        sectionTitle("Certificates", symbol: "checkmark.shield")
+                        Text(profile.selectedCertificates.map { "\($0.certificates.count) CA certificate(s) · \($0.source)" }
+                             ?? (profile.certificateBundle.isEmpty ? "Python default CA certificates" : "Custom CA bundle"))
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button("Choose Certificates…") { editingCertificates = profile }
+                            .disabled(manager.status(profile.id).isBusy)
+                    }
                     card { MCPPythonSetupView(manager: manager, profile: profile).id(profile.id) }
                 }
 
@@ -375,6 +390,7 @@ struct MCPProfileEditor: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if profile.kind == .exchange {
+                    Section("Certificates") { MCPCertificateSettingsView(profile: $profile) }
                     Section("Mail preferences") {
                         TextField("Time zone", text: $profile.timezone)
                         Text("Today, yesterday and week boundaries use this time zone. Weeks start on Monday.")
@@ -382,8 +398,6 @@ struct MCPProfileEditor: View {
                     }
                     Section {
                         DisclosureGroup("Advanced") {
-                            HStack { TextField("Corporate CA bundle (optional)", text: $profile.certificateBundle)
-                                Button("Choose…") { chooseFile { profile.certificateBundle = $0 } } }
                             HStack { TextField("Existing MCP executable (optional)", text: $profile.executable)
                                 Button("Choose…") { chooseFile { profile.executable = $0 } } }
                             Text("Leave the executable empty to install the included connector after saving.")

@@ -46,6 +46,18 @@ public final class AppMCPManager {
     public func status(_ id: UUID) -> AppMCPStatus { statuses[id] ?? .disconnected }
     public func credentials(_ id: UUID) throws -> AppMCPCredentials { try secrets.read(id: id) }
 
+    public func setCertificates(_ selection: AppMCPCertificateSelection?, for id: UUID) throws {
+        guard readableStore, let index = profiles.firstIndex(where: { $0.id == id && $0.kind == .exchange }) else {
+            throw AppMCPError.configuration("The saved connection is unavailable.")
+        }
+        if let selection { try AppMCPCertificates.validate(AppMCPCertificates.inspect(selection)) }
+        var updated = profiles
+        updated[index].selectedCertificates = selection
+        updated[index].certificateBundle = ""
+        try store.save(updated)
+        disconnect(id); profiles = updated
+    }
+
     public func save(_ profile: AppMCPProfile, credentials: AppMCPCredentials) throws {
         guard readableStore else { throw AppMCPError.configuration("Resolve the saved-connections file error before making changes.") }
         try profile.validate()
@@ -164,7 +176,14 @@ public final class AppMCPManager {
                                    "EXCHANGE_PASSWORD": credentials.password, "EXCHANGE_SERVER": profile.server,
                                    "EXCHANGE_AUTH_TYPE": profile.authType, "EXCHANGE_TIMEZONE": profile.timezone,
                                    "EXCHANGE_AUTODISCOVER": "false", "EXCHANGE_VERIFY_SSL": "true"]
-                    if !profile.certificateBundle.isEmpty { environment["REQUESTS_CA_BUNDLE"] = profile.certificateBundle }
+                    report.begin("Prepare Exchange TLS certificates")
+                    if let bundle = try AppMCPCertificates.prepare(profile: profile,
+                        directory: store.fileURL.deletingLastPathComponent().appendingPathComponent("MCP/Certificates")) {
+                        environment["REQUESTS_CA_BUNDLE"] = bundle.path
+                        report.complete("Selected CA certificates prepared for this connection. TLS and hostname verification remain enabled.\nSource: \(profile.selectedCertificates?.source ?? profile.certificateBundle)")
+                    } else {
+                        report.complete("Using Python's default CA certificates. For a corporate CA installed in macOS, choose Certificates → Choose from Keychain. TLS verification remains enabled.")
+                    }
                 }
                 sessions[id] = client
                 client.onStage = { [weak self] stage in

@@ -46,6 +46,23 @@ private final class MCPPreviewClient: AppMCPClient {
 @Suite(.serialized)
 @MainActor
 struct MCPConnectionsPresentationTests {
+    @Test func certificatePickerAndSettingsRenderWithoutReadingKeychain() throws {
+        _ = NSApplication.shared
+        let file = try #require(Bundle.module.url(forResource: "mcp-corporate-ca", withExtension: "der", subdirectory: "Fixtures"))
+        let selection = try AppMCPCertificates.readFile(file)
+        let certificates = try AppMCPCertificates.inspect(selection)
+        let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
+        try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
+        try renderView(MCPKeychainCertificatePicker(certificates: certificates) { _ in }
+            .preferredColorScheme(.light), size: NSSize(width: 720, height: 650),
+            to: screenshots.appendingPathComponent("certificate-picker.png"))
+        var profile = AppMCPProfile(); profile.selectedCertificates = selection
+        try renderView(MCPCertificateSettingsView(profile: .constant(profile)).padding(24)
+            .frame(width: 620, height: 390, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor)).preferredColorScheme(.light),
+            size: NSSize(width: 620, height: 390), to: screenshots.appendingPathComponent("certificate-selected.png"))
+    }
+
     @Test func pythonDiscoveryPickerShowsVerifiedVersionsAndManualFallback() async throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-python-picker-\(UUID())")

@@ -21,6 +21,8 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
     public var authType = "NTLM"
     public var timezone = "Europe/Moscow"
     public var certificateBundle = ""
+    /// Public certificates selected for this connection; no private keys or identities.
+    public var selectedCertificates: AppMCPCertificateSelection?
     public var environmentKeys: [String] = []
     public var enabledTools: Set<String> = []
     public init(kind: AppMCPKind = .exchange) {
@@ -43,6 +45,14 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
             }
             guard ["NTLM", "BASIC"].contains(authType), TimeZone(identifier: timezone) != nil else {
                 throw AppMCPError.configuration("Choose a valid authentication method and time zone.")
+            }
+            if let selectedCertificates {
+                guard certificateBundle.isEmpty else {
+                    throw AppMCPError.configuration("Choose one certificate source for this connection.")
+                }
+#if os(macOS)
+                try AppMCPCertificates.validate(AppMCPCertificates.inspect(selectedCertificates))
+#endif
             }
         } else {
             guard executable.hasPrefix("/") else {
