@@ -32,7 +32,19 @@ public final class AppModel {
     public var modelPathText: String
     public private(set) var chats: [AppChat]
     public private(set) var selectedChatID: AppChat.ID
-    public private(set) var imageAttachments: [AppImageAttachment] = []
+    private var stagedChatImages: [AppChat.ID: [AppImageAttachment]] = [:]
+    public private(set) var imageAttachments: [AppImageAttachment] {
+        get { stagedChatImages[selectedChatID] ?? [] }
+        set { stagedChatImages[selectedChatID] = newValue }
+    }
+    /// Saved images on a branch draft stay owned by history, not by staging.
+    public var composerImageAttachments: [AppImageAttachment] {
+        imageAttachments + (selectedChat.draftImages ?? []).map(chatImageStore.attachment)
+    }
+
+    public func images(for message: AppChatMessage) -> [AppImageAttachment] {
+        message.images.map(chatImageStore.attachment)
+    }
     public private(set) var imageAttachmentError: String?
     /// A count, not a flag. The picker and a drop can both be staging at once,
     /// and whichever finished first cleared a shared Bool — reopening `canRun`
@@ -140,6 +152,7 @@ public final class AppModel {
     private var unloadTask: Task<Void, Never>?
     private let chatPersistenceCoordinator = AppChatPersistenceCoordinator()
     private var chatPersistenceRevision: UInt64 = 0
+    private var knownChatImageIDs: Set<UUID> = []
     private var loadGeneration: UInt64 = 0
     /// The highest load-phase sequence already applied. Each `onState` callback
     /// hops to the main actor in its own task, and ordering between separately
@@ -198,6 +211,7 @@ public final class AppModel {
         self.modelPathText = directory.path
         self.chats = chatLoadResult.archive.chats
         self.selectedChatID = chatLoadResult.archive.selectedChatID
+        self.knownChatImageIDs = Set(chatLoadResult.archive.chats.flatMap { $0.imageIDs })
         // The app always releases the image tower after each image. Keeping it
         // resident saves a few hundred milliseconds on a run of images and
         // holds about 1 GB of page cache to do it — a trade worth exposing to
@@ -612,12 +626,13 @@ public final class AppModel {
             // turn; only New chat clears that.
             && conversation.canSend
             && (!promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !imageAttachments.isEmpty)
+                || !composerImageAttachments.isEmpty)
     }
 
     public var canSubmitPrompt: Bool {
         guard !isRunning,
-              !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !composerImageAttachments.isEmpty else {
             return false
         }
         return canRun || canLoadModel || canReloadModel
@@ -654,7 +669,7 @@ public final class AppModel {
         showPromptExamples
             && promptText.isEmpty
             && promptAttachments.isEmpty
-            && imageAttachments.isEmpty
+            && composerImageAttachments.isEmpty
             && !isRunning
             && !hasOutputTranscript
     }
@@ -799,8 +814,12 @@ public final class AppModel {
         guard path != modelPathText else { return }
 
         flushChatPersistence()
-        modelPathText = path
         clearImages()
+        for attachments in stagedChatImages.values {
+            for attachment in attachments { attachmentStore.remove(attachment) }
+        }
+        stagedChatImages.removeAll()
+        modelPathText = path
         applyPersistedSettings(
             forModelDirectory: URL(fileURLWithPath: path, isDirectory: true))
         loadGeneration &+= 1
@@ -1015,7 +1034,7 @@ public final class AppModel {
             return
         }
         let capacity = maximumImageAttachments
-        let available = max(0, capacity - imageAttachments.count)
+        let available = max(0, capacity - composerImageAttachments.count)
         guard available > 0 else {
             imageAttachmentError = Self.imageCapacityMessage(
                 capacity: capacity, context: effectiveMaxContextTokens)
@@ -1032,6 +1051,8 @@ public final class AppModel {
                 capacity: capacity, context: effectiveMaxContextTokens)
         }
         let store = attachmentStore
+        let targetChatID = selectedChatID
+        let targetModelPath = modelPathText
         Task.detached(priority: .userInitiated) { [weak self] in
             var staged: [AppImageAttachment] = []
             defer {
@@ -1043,7 +1064,8 @@ public final class AppModel {
                 for url in selected {
                     staged.append(try store.stage(url))
                 }
-                await self?.finishAddingImages(staged)
+                await self?.finishAddingImages(
+                    staged, chatID: targetChatID, modelPath: targetModelPath)
             } catch {
                 // The batch is all-or-nothing, so the copies made before the
                 // failure are referenced by nothing and would never be deleted.
@@ -1059,7 +1081,7 @@ public final class AppModel {
     public func addImageData(_ data: Data, displayName: String) {
         guard isImageInputAvailable, !isRunning else { return }
         let capacity = maximumImageAttachments
-        guard imageAttachments.count < capacity else {
+        guard composerImageAttachments.count < capacity else {
             imageAttachmentError = Self.imageCapacityMessage(
                 capacity: capacity, context: effectiveMaxContextTokens)
             return
@@ -1067,10 +1089,13 @@ public final class AppModel {
         addingImagesCount += 1
         imageAttachmentError = nil
         let store = attachmentStore
+        let targetChatID = selectedChatID
+        let targetModelPath = modelPathText
         Task.detached(priority: .userInitiated) { [weak self] in
             do {
                 let staged = try store.stage(data: data, displayName: displayName)
-                await self?.finishAddingImages([staged])
+                await self?.finishAddingImages(
+                    [staged], chatID: targetChatID, modelPath: targetModelPath)
             } catch {
                 await self?.finishAddingImages(error: error)
             }
@@ -1092,8 +1117,15 @@ public final class AppModel {
     }
 
     public func removeImage(id: UUID) {
-        guard !isRunning,
-              let index = imageAttachments.firstIndex(where: { $0.id == id }) else { return }
+        guard !isRunning else { return }
+        if let chatIndex = selectedChatIndex,
+           chats[chatIndex].draftImages?.contains(where: { $0.id == id }) == true {
+            chats[chatIndex].draftImages?.removeAll { $0.id == id }
+            imageAttachmentError = nil
+            persistChats()
+            return
+        }
+        guard let index = imageAttachments.firstIndex(where: { $0.id == id }) else { return }
         let attachment = imageAttachments.remove(at: index)
         attachmentStore.remove(attachment)
         imageAttachmentError = nil
@@ -1103,16 +1135,25 @@ public final class AppModel {
         guard !isRunning else { return }
         for attachment in imageAttachments { attachmentStore.remove(attachment) }
         imageAttachments.removeAll()
+        if let index = selectedChatIndex { chats[index].draftImages = nil }
         imageAttachmentError = nil
+        persistChats()
     }
 
-    private func finishAddingImages(_ staged: [AppImageAttachment]) {
+    private func finishAddingImages(
+        _ staged: [AppImageAttachment], chatID: AppChat.ID, modelPath: String
+    ) {
         // Two adds can be in flight at once — the picker and a drop — and each
         // sized itself against the count it saw at admission, so the second to
         // land can push past the cap. Re-check against the real count here and
         // delete what does not fit, rather than leaving staged copies that
         // nothing references.
         defer { addingImagesCount = max(0, addingImagesCount - 1) }
+        guard modelPath == modelPathText,
+              let target = chats.first(where: { $0.id == chatID }) else {
+            for attachment in staged { attachmentStore.remove(attachment) }
+            return
+        }
         // The counter keeps `canRun` closed until every batch lands, so a run
         // should not be able to start underneath one. If it ever does, the run
         // has already snapshotted its images: appending here would attach them
@@ -1125,12 +1166,13 @@ public final class AppModel {
             return
         }
         let capacity = maximumImageAttachments
-        let available = max(0, capacity - imageAttachments.count)
+        let count = (stagedChatImages[chatID]?.count ?? 0) + (target.draftImages?.count ?? 0)
+        let available = max(0, capacity - count)
         let accepted = staged.prefix(available)
         for attachment in staged.dropFirst(accepted.count) {
             attachmentStore.remove(attachment)
         }
-        imageAttachments.append(contentsOf: accepted)
+        stagedChatImages[chatID, default: []].append(contentsOf: accepted)
         if accepted.count < staged.count {
             imageAttachmentError = Self.imageCapacityMessage(
                 capacity: capacity, context: effectiveMaxContextTokens)
@@ -2144,6 +2186,7 @@ public final class AppModel {
             ? AppChatFileStore.loadOrCreateWithRecovery(forModelDirectory: modelDirectory)
             : AppChatLoadResult(archive: AppChatArchive.empty(), recoveryURL: nil)
         chats = result.archive.chats
+        knownChatImageIDs = Set(chats.flatMap { $0.imageIDs })
         selectedChatID = result.archive.selectedChatID
         synchronizeOutputWithSelectedChat()
         if let recoveryURL = result.recoveryURL {
@@ -2161,7 +2204,13 @@ public final class AppModel {
     }
 
     private func enqueueChatPersistence(delay: TimeInterval) {
-        guard settingsPersistenceEnabled else { return }
+        let retainedImages = referencedChatImageIDs
+        let retiredImages = knownChatImageIDs.subtracting(retainedImages)
+        knownChatImageIDs = retainedImages
+        guard settingsPersistenceEnabled else {
+            chatImageStore.remove(ids: retiredImages)
+            return
+        }
         chatPersistenceRevision &+= 1
         let revision = chatPersistenceRevision
         let archive = AppChatArchive(
@@ -2172,7 +2221,9 @@ public final class AppModel {
             revision: revision,
             archive: archive,
             modelDirectory: modelDirectory,
-            delay: delay
+            delay: delay,
+            retiredImageIDs: retiredImages,
+            retainedImageIDs: retainedImages
         ) { [weak self] detail in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -2184,6 +2235,9 @@ public final class AppModel {
 
     public func flushChatPersistence() {
         guard settingsPersistenceEnabled else { return }
+        let retainedImages = referencedChatImageIDs
+        let retiredImages = knownChatImageIDs.subtracting(retainedImages)
+        knownChatImageIDs = retainedImages
         chatPersistenceRevision &+= 1
         let revision = chatPersistenceRevision
         let archive = AppChatArchive(
@@ -2194,11 +2248,26 @@ public final class AppModel {
             try chatPersistenceCoordinator.flush(
                 revision: revision,
                 archive: archive,
-                modelDirectory: modelDirectory)
+                modelDirectory: modelDirectory,
+                retiredImageIDs: retiredImages,
+                retainedImageIDs: retainedImages)
         } catch {
             self.error = .unknown(
                 "Chat history could not be saved: \(error)")
         }
+    }
+
+    private var referencedChatImageIDs: Set<UUID> {
+        Set(chats.flatMap { $0.imageIDs }).union(clearedChatSnapshot?.imageIDs ?? [])
+    }
+
+    private var chatImageStore: AppChatImageStore {
+        if settingsPersistenceEnabled {
+            return AppChatImageStore(modelDirectory: URL(fileURLWithPath: modelPathText))
+        }
+        return AppChatImageStore(directoryURL: attachmentStore.directoryURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(attachmentStore.directoryURL.lastPathComponent + "-history"))
     }
 
     private func persistSettings() {
@@ -2342,10 +2411,19 @@ public final class AppModel {
     /// Deletes every file this session staged. Called when the app is quitting,
     /// which is the only moment they are all certainly unwanted.
     public func releaseAllAttachments() {
+        // Commit history before transient inference links are removed. Drop
+        // only the in-memory undo protection; the archive keeps its images.
+        clearedChatSnapshot = nil
+        flushChatPersistence()
         releaseConversationImages()
-        for attachment in imageAttachments { attachmentStore.remove(attachment) }
-        imageAttachments.removeAll()
+        for attachments in stagedChatImages.values {
+            for attachment in attachments { attachmentStore.remove(attachment) }
+        }
+        stagedChatImages.removeAll()
         attachmentStore.removeAll()
+        if !settingsPersistenceEnabled {
+            chatImageStore.remove(ids: knownChatImageIDs)
+        }
     }
 
     /// Memory comes from the process doing the work: the decode service when
@@ -2398,6 +2476,7 @@ public final class AppModel {
         conversation.startNew()
         guard let index = selectedChatIndex else { return }
         chats[index].messages.removeAll()
+        chats[index].draftImages = nil
         chats[index].contextSummary = nil
         chats[index].summarizedThroughMessageID = nil
         chats[index].updatedAt = Date()
@@ -2603,6 +2682,7 @@ public final class AppModel {
         if branchPoint.role == .user {
             branch.draft = branchPoint.content
             branch.draftContextContent = branchPoint.contextContent
+            branch.draftImages = branchPoint.images
         }
 
         insertAndSelectBranch(branch)
@@ -2643,6 +2723,7 @@ public final class AppModel {
             branch.draftContextContent = editedUserContextContent(
                 from: editedMessage,
                 replacement: replacement)
+            branch.draftImages = editedMessage.images
         } else if let lastIndex = branch.messages.indices.last {
             branch.messages[lastIndex].content = replacement
             branch.messages[lastIndex].contextContent = replacement
@@ -2765,6 +2846,9 @@ public final class AppModel {
         guard canEditChat(id: id),
               let index = chats.firstIndex(where: { $0.id == id }) else {
             return
+        }
+        for attachment in stagedChatImages.removeValue(forKey: id) ?? [] {
+            attachmentStore.remove(attachment)
         }
         chats.remove(at: index)
         if clearedChatSnapshot?.id == id { clearedChatSnapshot = nil }
@@ -2936,9 +3020,9 @@ public final class AppModel {
                 }
             }
         } else {
-            commitUserMessage(
+            guard commitUserMessage(
                 for: request,
-                visiblePrompt: visiblePrompt)
+                visiblePrompt: visiblePrompt) else { return }
             launchGeneration(request)
         }
     }
@@ -2997,24 +3081,37 @@ public final class AppModel {
         }
         phase = .prefill
         generationTranscriptMailbox?.reset()
-        commitUserMessage(
+        guard commitUserMessage(
             for: request,
-            visiblePrompt: visiblePrompt)
+            visiblePrompt: visiblePrompt) else { return }
         launchGeneration(request)
     }
 
     private func commitUserMessage(
         for request: AppGenerationRequest,
         visiblePrompt: String
-    ) {
+    ) -> Bool {
+        let savedImages: [AppChatImageAttachment]
+        do {
+            savedImages = try chatImageStore.save(request.imageAttachments)
+        } catch {
+            for attachment in request.imageAttachments { attachmentStore.remove(attachment) }
+            _ = conversation.abandonTurn()
+            outputImageAttachments = []
+            finishUncommittedRun(.invalidRequest(
+                "Could not save the attached images in chat history: \(error)"))
+            return false
+        }
         let contextPrompt = request.messages.last?.content ?? promptText
         appendUserMessage(
             visibleContent: visiblePrompt,
-            contextContent: contextPrompt)
+            contextContent: contextPrompt,
+            images: savedImages)
         for attachment in imageAttachments { attachmentStore.remove(attachment) }
         imageAttachments.removeAll()
         imageAttachmentError = nil
         clearedPromptSnapshot = nil
+        return true
     }
 
     private func launchGeneration(_ request: AppGenerationRequest) {
@@ -3046,6 +3143,10 @@ public final class AppModel {
     public func makeRequest(
         ticket: AppConversation.Ticket? = nil
     ) throws -> AppGenerationRequest {
+        if !composerImageAttachments.isEmpty, !isImageInputAvailable {
+            throw AppInferenceError.invalidRequest(
+                "Image support is unavailable. Install or activate the image companion pack before sending these images.")
+        }
         // A run executes against the session that is actually loaded. Sending
         // the current settings instead meant that changing Context, Slots or
         // image residency and pressing Generate — without reloading first —
@@ -3074,7 +3175,7 @@ public final class AppModel {
         let template = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
             messages: [pendingMessage],
-            imageAttachments: imageAttachments,
+            imageAttachments: composerImageAttachments,
             maxNewTokens: maxNewTokensOverride ?? effective.maxContextTokens,
             maxContextTokens: effective.maxContextTokens,
             temperature: Float(temperature),
@@ -3575,15 +3676,22 @@ public final class AppModel {
     /// turn is gone from the transcript, so nothing else refers to them. Losing
     /// them here would silently drop attachments the user had picked.
     private func restoreComposer(from turn: AppChatTurn) {
-        if promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            promptText = turn.text
+        let chatID = activeRunChatID ?? selectedChatID
+        guard let index = chats.firstIndex(where: { $0.id == chatID }) else {
+            for attachment in turn.images { attachmentStore.remove(attachment) }
+            outputImageAttachments = []
+            return
         }
-        if imageAttachments.isEmpty, !turn.images.isEmpty {
-            imageAttachments = turn.images
+        if chats[index].draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            chats[index].draft = turn.text
+        }
+        if stagedChatImages[chatID, default: []].isEmpty, !turn.images.isEmpty {
+            stagedChatImages[chatID] = turn.images
         } else {
             for attachment in turn.images { attachmentStore.remove(attachment) }
         }
         outputImageAttachments = []
+        persistChats()
     }
 
     private func finishStreamFailure(_ appError: AppInferenceError, generation: Int) {
@@ -3640,16 +3748,19 @@ public final class AppModel {
 
     private func appendUserMessage(
         visibleContent: String,
-        contextContent: String
+        contextContent: String,
+        images: [AppChatImageAttachment]
     ) {
         guard let index = selectedChatIndex else { return }
         let message = AppChatMessage(
             role: .user,
             content: visibleContent,
-            contextContent: contextContent)
+            contextContent: contextContent,
+            images: images)
         chats[index].messages.append(message)
         chats[index].draft = ""
         chats[index].draftAttachments.removeAll()
+        chats[index].draftImages = nil
         chats[index].draftContextContent = nil
         chats[index].updatedAt = Date()
         if chats[index].title == "New chat" {
@@ -3729,7 +3840,8 @@ public final class AppModel {
                 role: message.role,
                 content: message.content,
                 contextContent: message.contextContent,
-                createdAt: message.createdAt)
+                createdAt: message.createdAt,
+                images: message.images)
             clonedMessages.append(clone)
             clonedMessageIDs[message.id] = clone.id
         }

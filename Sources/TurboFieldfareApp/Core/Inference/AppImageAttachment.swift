@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import TurboFieldfare
 
-public struct AppImageAttachment: Sendable, Equatable {
+public struct AppImageAttachment: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let fileURL: URL
     public let displayName: String

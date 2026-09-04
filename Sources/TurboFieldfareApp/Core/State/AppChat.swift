@@ -34,17 +34,34 @@ public struct AppChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var content: String
     public var contextContent: String
     public var createdAt: Date
+    public var images: [AppChatImageAttachment]
 
     public init(id: UUID = UUID(),
                 role: Role,
                 content: String,
                 contextContent: String? = nil,
-                createdAt: Date = Date()) {
+                createdAt: Date = Date(),
+                images: [AppChatImageAttachment] = []) {
         self.id = id
         self.role = role
         self.content = content
         self.contextContent = contextContent ?? content
         self.createdAt = createdAt
+        self.images = images
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, role, content, contextContent, createdAt, images
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        role = try values.decode(Role.self, forKey: .role)
+        content = try values.decode(String.self, forKey: .content)
+        contextContent = try values.decodeIfPresent(String.self, forKey: .contextContent) ?? content
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        images = try values.decodeIfPresent([AppChatImageAttachment].self, forKey: .images) ?? []
     }
 }
 
@@ -54,6 +71,7 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
     public var messages: [AppChatMessage]
     public var draft: String
     public var draftAttachments: [AppPromptAttachment]
+    public var draftImages: [AppChatImageAttachment]?
     public var draftContextContent: String?
     public var contextSummary: String?
     public var summarizedThroughMessageID: AppChatMessage.ID?
@@ -72,6 +90,7 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
                 messages: [AppChatMessage] = [],
                 draft: String = "",
                 draftAttachments: [AppPromptAttachment] = [],
+                draftImages: [AppChatImageAttachment]? = nil,
                 draftContextContent: String? = nil,
                 contextSummary: String? = nil,
                 summarizedThroughMessageID: AppChatMessage.ID? = nil,
@@ -89,6 +108,7 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
         self.messages = messages
         self.draft = draft
         self.draftAttachments = draftAttachments
+        self.draftImages = draftImages
         self.draftContextContent = draftContextContent
         self.contextSummary = contextSummary
         self.summarizedThroughMessageID = summarizedThroughMessageID
@@ -104,6 +124,10 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var isPinned: Bool { pinnedAt != nil }
+
+    var imageIDs: Set<UUID> {
+        Set(messages.flatMap(\.images).map(\.id) + (draftImages ?? []).map(\.id))
+    }
 
     public var isTask: Bool { taskStatus != nil }
 
@@ -274,6 +298,7 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
 
     private let queue: DispatchQueue
     private var latestRevision: UInt64 = 0
+    private var pendingImageRemovals: [URL: Set<UUID>] = [:]
 
     init(label: String = "com.turbofieldfare.chat-persistence") {
         self.queue = DispatchQueue(label: label, qos: .utility)
@@ -284,9 +309,12 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
         archive: AppChatArchive,
         modelDirectory: URL,
         delay: TimeInterval,
+        retiredImageIDs: Set<UUID> = [],
+        retainedImageIDs: Set<UUID> = [],
         onFailure: @escaping FailureHandler
     ) {
         queue.async { [self] in
+            pendingImageRemovals[modelDirectory, default: []].formUnion(retiredImageIDs)
             latestRevision = max(latestRevision, revision)
             if delay > 0 {
                 queue.asyncAfter(deadline: .now() + delay) { [self] in
@@ -294,6 +322,7 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
                         revision: revision,
                         archive: archive,
                         modelDirectory: modelDirectory,
+                        retainedImageIDs: retainedImageIDs,
                         onFailure: onFailure)
                 }
             } else {
@@ -301,6 +330,7 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
                     revision: revision,
                     archive: archive,
                     modelDirectory: modelDirectory,
+                    retainedImageIDs: retainedImageIDs,
                     onFailure: onFailure)
             }
         }
@@ -309,14 +339,19 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
     func flush(
         revision: UInt64,
         archive: AppChatArchive,
-        modelDirectory: URL
+        modelDirectory: URL,
+        retiredImageIDs: Set<UUID> = [],
+        retainedImageIDs: Set<UUID> = []
     ) throws {
         try queue.sync { [self] in
+            pendingImageRemovals[modelDirectory, default: []].formUnion(retiredImageIDs)
             latestRevision = max(latestRevision, revision)
             guard revision == latestRevision else { return }
             try AppChatFileStore.save(
                 archive,
                 forModelDirectory: modelDirectory)
+            removeRetiredImages(for: modelDirectory, preserving:
+                retainedImageIDs.union(archive.chats.flatMap { $0.imageIDs }))
         }
     }
 
@@ -324,6 +359,7 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
         revision: UInt64,
         archive: AppChatArchive,
         modelDirectory: URL,
+        retainedImageIDs: Set<UUID>,
         onFailure: @escaping FailureHandler
     ) {
         guard revision == latestRevision else { return }
@@ -331,8 +367,19 @@ final class AppChatPersistenceCoordinator: @unchecked Sendable {
             try AppChatFileStore.save(
                 archive,
                 forModelDirectory: modelDirectory)
+            removeRetiredImages(for: modelDirectory, preserving:
+                retainedImageIDs.union(archive.chats.flatMap { $0.imageIDs }))
         } catch {
             onFailure("\(error)")
         }
+    }
+
+    private func removeRetiredImages(for modelDirectory: URL, preserving ids: Set<UUID>) {
+        // Delete only known retired UUIDs, after a successful archive commit.
+        // Never sweep the directory: a newer submission may already have
+        // created its image files while its archive write is still queued.
+        let retired = (pendingImageRemovals[modelDirectory] ?? []).subtracting(ids)
+        AppChatImageStore(modelDirectory: modelDirectory).remove(ids: retired)
+        pendingImageRemovals[modelDirectory] = nil
     }
 }

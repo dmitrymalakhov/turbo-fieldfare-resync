@@ -27,7 +27,7 @@ struct PromptComposerView: View {
                     Text(progress).font(.callout).foregroundStyle(.secondary)
                 }
             }
-            if !model.imageAttachments.isEmpty || model.imageAttachmentError != nil {
+            if !model.composerImageAttachments.isEmpty || model.imageAttachmentError != nil {
                 imageAttachmentStrip
             }
             if !model.promptAttachments.isEmpty {
@@ -163,7 +163,7 @@ struct PromptComposerView: View {
                 // same size now, but alignment left to chance is how the row
                 // drifted out of line in the first place.
                 HStack(alignment: .top, spacing: 8) {
-                    ForEach(model.imageAttachments, id: \.id) { attachment in
+                    ForEach(model.composerImageAttachments, id: \.id) { attachment in
                         SubmittedImageThumbnail(attachment: attachment)
                             .overlay(alignment: .topTrailing) {
                             Button {
@@ -266,7 +266,7 @@ struct PromptComposerView: View {
         model.isImageInputAvailable
             && !model.isRunning
             && !model.isAddingImages
-            && model.imageAttachments.count < model.maximumImageAttachments
+            && model.composerImageAttachments.count < model.maximumImageAttachments
     }
 
     private var attachmentPickerContentTypes: [UTType] {
@@ -413,7 +413,7 @@ struct PromptComposerView: View {
     @ViewBuilder
     private var clearAction: some View {
         if !model.isRunning
-            && (!model.promptText.isEmpty || !model.imageAttachments.isEmpty
+            && (!model.promptText.isEmpty || !model.composerImageAttachments.isEmpty
                 || !model.promptAttachments.isEmpty) {
             Button {
                 model.promptText = ""

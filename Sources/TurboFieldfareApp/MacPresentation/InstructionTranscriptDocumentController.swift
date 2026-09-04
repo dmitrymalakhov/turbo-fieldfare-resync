@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TurboFieldfareAppCore
 
 public struct InstructionTranscriptMessage: Equatable, Sendable {
     public enum Role: Equatable, Sendable {
@@ -10,11 +11,14 @@ public struct InstructionTranscriptMessage: Equatable, Sendable {
     public let role: Role
     public let content: String
     public let isEdited: Bool
+    public let images: [AppImageAttachment]
 
-    public init(role: Role, content: String, isEdited: Bool = false) {
+    public init(role: Role, content: String, isEdited: Bool = false,
+                images: [AppImageAttachment] = []) {
         self.role = role
         self.content = content
         self.isEdited = isEdited
+        self.images = images
     }
 }
 
@@ -307,7 +311,8 @@ public final class InstructionTranscriptDocumentController {
         showsPrefillPlaceholder: Bool = false,
         promptPrefix: NSAttributedString = NSAttributedString(),
         promptPrefixIdentifier: String = "",
-        isResponseEdited: Bool = false
+        isResponseEdited: Bool = false,
+        historyImagePrefixes: [Int: NSAttributedString] = [:]
     ) -> UpdateResult {
         let prompt = history.last(where: { $0.role == .user })?.content ?? ""
         let responseChanged = response != self.response
@@ -345,6 +350,7 @@ public final class InstructionTranscriptDocumentController {
                 storage: storage,
                 history: history,
                 promptPrefix: promptPrefix,
+                historyImagePrefixes: historyImagePrefixes,
                 response: response,
                 isResponseEdited: isResponseEdited,
                 showsPrefillPlaceholder: displaysPrefillPlaceholder,
@@ -432,6 +438,7 @@ public final class InstructionTranscriptDocumentController {
         storage: NSMutableAttributedString,
         history: [InstructionTranscriptMessage],
         promptPrefix: NSAttributedString,
+        historyImagePrefixes: [Int: NSAttributedString],
         response: String,
         isResponseEdited: Bool,
         showsPrefillPlaceholder: Bool,
@@ -445,8 +452,10 @@ public final class InstructionTranscriptDocumentController {
                 document.append(NSAttributedString(
                     string: message.isEdited ? "You (edited)\n" : "You\n",
                     attributes: Self.userLabelAttributes()))
-                if index == lastUserIndex, promptPrefix.length > 0 {
-                    document.append(promptPrefix)
+                let imagePrefix = historyImagePrefixes[index]
+                    ?? (index == lastUserIndex ? promptPrefix : NSAttributedString())
+                if imagePrefix.length > 0 {
+                    document.append(imagePrefix)
                     if !message.content.isEmpty {
                         document.append(NSAttributedString(
                             string: "\n\n",

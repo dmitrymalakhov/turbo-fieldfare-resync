@@ -147,6 +147,15 @@ PowerPoint manually from the response menu. The conversation menu can export
 the visible transcript as plain text. Clearing a chat requires confirmation and
 can be undone immediately afterward.
 
+Submitted images are saved with their messages in `mac-app-chat-images/`
+beside the chat archive. History shows thumbnails that can be opened for a
+larger view, including after switching chats or restarting the app. Branches
+share saved image files; editing or continuing from an image-bearing user
+message also keeps its images in the new draft. A missing file is shown as
+unavailable and cannot silently be omitted from a resubmitted request. Old
+archives remain readable, but images discarded by older versions cannot be
+recovered from their text-only messages.
+
 The composer can extract text locally from plain-text files, PDF, DOCX, PPTX,
 and XLSX files and include it with the next message. Files are not uploaded to
 a remote service.

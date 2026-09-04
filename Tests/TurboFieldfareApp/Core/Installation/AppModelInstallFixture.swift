@@ -3,8 +3,11 @@ import Foundation
 import TurboFieldfare
 @testable import TurboFieldfareAppCore
 
-func makeCompleteModelInstall(_ tag: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
+func makeCompleteModelInstall(
+    _ tag: String,
+    parentDirectory: URL = FileManager.default.temporaryDirectory
+) throws -> URL {
+    let directory = parentDirectory
         .appendingPathComponent("turbofieldfare-complete-\(tag)-\(UUID().uuidString).gturbo")
     let experts = directory.appendingPathComponent("packed_experts", isDirectory: true)
     try FileManager.default.createDirectory(at: experts, withIntermediateDirectories: true)

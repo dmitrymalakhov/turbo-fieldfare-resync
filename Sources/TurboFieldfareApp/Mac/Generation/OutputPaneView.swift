@@ -141,7 +141,8 @@ struct OutputPaneView: View {
                         InstructionTranscriptMessage(
                             role: message.role == .user ? .user : .assistant,
                             content: message.content,
-                            isEdited: isEditedAssistantMessage(message))
+                            isEdited: isEditedAssistantMessage(message),
+                            images: model.images(for: message))
                     },
                     lastAnswer: model.outputResponsePlainText,
                     conversationPlainText: model.outputConversationPlainText,
@@ -163,6 +164,7 @@ struct OutputPaneView: View {
                     responseMessage: model.displayedResponseMessage,
                     summaryBoundaryID: model.selectedChat.summarizedThroughMessageID,
                     canEdit: model.canEditSelectedChat,
+                    images: model.images,
                     isEdited: isEditedAssistantMessage,
                     copy: copy,
                     edit: { messageBeingEdited = $0 },
@@ -614,6 +616,7 @@ private struct ConversationTranscriptView: View {
     let responseMessage: AppChatMessage?
     let summaryBoundaryID: AppChatMessage.ID?
     let canEdit: Bool
+    let images: (AppChatMessage) -> [AppImageAttachment]
     let isEdited: (AppChatMessage) -> Bool
     let copy: (String) -> Void
     let edit: (AppChatMessage) -> Void
@@ -628,6 +631,7 @@ private struct ConversationTranscriptView: View {
                     TranscriptMessageRow(
                         message: message,
                         content: message.content,
+                        images: images(message),
                         canEdit: canEdit,
                         isEdited: isEdited(message),
                         copy: copy,
@@ -643,6 +647,7 @@ private struct ConversationTranscriptView: View {
                         TranscriptMessageRow(
                             message: responseMessage,
                             content: response,
+                            images: images(responseMessage),
                             canEdit: canEdit,
                             isEdited: isEdited(responseMessage),
                             copy: copy,
@@ -668,6 +673,7 @@ private struct ConversationTranscriptView: View {
 private struct TranscriptMessageRow: View {
     let message: AppChatMessage
     let content: String
+    let images: [AppImageAttachment]
     let canEdit: Bool
     let isEdited: Bool
     let copy: (String) -> Void
@@ -676,6 +682,7 @@ private struct TranscriptMessageRow: View {
     let regenerate: (AppChatMessage) -> Void
     @State private var isHovered = false
     @State private var didCopy = false
+    @State private var previewedImage: AppImageAttachment?
     @FocusState private var focusedAction: MessageAction?
 
     var body: some View {
@@ -696,6 +703,23 @@ private struct TranscriptMessageRow: View {
                 }
                 Spacer()
             }
+            if !images.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(images, id: \.id) { attachment in
+                            Button {
+                                previewedImage = attachment
+                            } label: {
+                                ChatHistoryImageView(
+                                    attachment: attachment,
+                                    maximumSize: CGSize(width: 240, height: 160))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open saved image: \(attachment.displayName)")
+                        }
+                    }
+                }
+            }
             messageContent
             messageActions
                 .opacity(actionsAreVisible ? 1 : 0)
@@ -715,6 +739,9 @@ private struct TranscriptMessageRow: View {
             }
         }
         .onHover { isHovered = $0 }
+        .sheet(item: $previewedImage) { attachment in
+            ChatHistoryImagePreview(attachment: attachment)
+        }
         .task(id: didCopy) {
             guard didCopy else { return }
             try? await Task.sleep(for: .seconds(1.2))
@@ -813,6 +840,68 @@ private struct TranscriptMessageRow: View {
         case edit
         case branch
         case regenerate
+    }
+}
+
+private struct ChatHistoryImageView: View {
+    let attachment: AppImageAttachment
+    let maximumSize: CGSize
+    @State private var image: NSImage?
+    @State private var isLoading = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else if isLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Saved image unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: maximumSize.width, height: maximumSize.height)
+            .background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+            Text(attachment.displayName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: maximumSize.width, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .task(id: attachment.fileURL) {
+            isLoading = true
+            image = nil
+            let pixels = Int(max(maximumSize.width, maximumSize.height) * 2)
+            let loaded = await Task.detached(priority: .userInitiated) {
+                SubmittedImageThumbnail.loadThumbnail(
+                    at: attachment.fileURL, maximumPixelSize: pixels,
+                    cacheKey: attachment.sha256)
+            }.value
+            guard !Task.isCancelled else { return }
+            image = loaded
+            isLoading = false
+        }
+    }
+}
+
+private struct ChatHistoryImagePreview: View {
+    let attachment: AppImageAttachment
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 12) {
+            ChatHistoryImageView(
+                attachment: attachment,
+                maximumSize: CGSize(width: 720, height: 480))
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(20)
     }
 }
 
@@ -956,7 +1045,9 @@ struct SubmittedImageThumbnail: View {
         maximumPixelSize: Int,
         cacheKey: String? = nil
     ) -> NSImage? {
-        TranscriptImageLoader.thumbnail(
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return nil }
+        return TranscriptImageLoader.thumbnail(
             at: url,
             maximumPixelSize: maximumPixelSize,
             budget: decodeBudget,
@@ -1071,6 +1162,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         var messages: [InstructionTranscriptMessage] = []
         var prompt = ""
         var promptPrefix = NSAttributedString()
+        var historyImagePrefixes: [Int: NSAttributedString] = [:]
         var promptPrefixIdentifier = ""
 
         /// The identifier the document controller is told about — empty until
@@ -1089,7 +1181,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         /// prevent it. A caller that cannot name the identifier cannot get it
         /// wrong.
         var appliedPromptPrefixIdentifier: String {
-            promptPrefix.length == 0 ? "" : promptPrefixIdentifier
+            promptPrefix.length == 0 && historyImagePrefixes.isEmpty ? "" : promptPrefixIdentifier
         }
         var isTerminal = false
         var showsPrefillPlaceholder = false
@@ -1174,13 +1266,14 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             self.mailbox = activeMailbox
             self.messages = messages
             self.prompt = prompt
-            let prefixIdentifier = images.map {
-                "\($0.id.uuidString):\($0.sha256)"
-            }.joined(separator: ",")
+            let prefixIdentifier = ([images] + messages.map(\.images)).map { group in
+                group.map { "\($0.fileURL.path):\($0.sha256)" }.joined(separator: ",")
+            }.joined(separator: "|")
             if prefixIdentifier != promptPrefixIdentifier {
                 promptPrefixIdentifier = prefixIdentifier
                 promptPrefix = NSAttributedString()
-                buildPromptPrefix(images, identifier: prefixIdentifier)
+                historyImagePrefixes = [:]
+                buildPromptPrefix(images, messages: messages, identifier: prefixIdentifier)
             }
             self.isTerminal = isTerminal
             self.showsPrefillPlaceholder = showsPrefillPlaceholder
@@ -1411,7 +1504,8 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                 showsPrefillPlaceholder: showsPrefillPlaceholder,
                 promptPrefix: promptPrefix,
                 promptPrefixIdentifier: appliedPromptPrefixIdentifier,
-                isResponseEdited: isOutputEdited)
+                isResponseEdited: isOutputEdited,
+                historyImagePrefixes: historyImagePrefixes)
             storage.endEditing()
             updatePrefillAnimationTimer()
 
@@ -1456,27 +1550,37 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         /// Decoding the submitted images ran inside `updateNSView`'s render
         /// pass, so several photos near the decode budget stalled the window at
         /// the moment Run was pressed. Only the decode moves off the main
-        /// thread — it lands in the loader's cache, and the attributed string is
-        /// then assembled from cached copies, which is cheap and stays here
-        /// where AppKit's drawing belongs. A prefix the transcript has since
+        /// thread. Keep the decoded copies until all prefixes are assembled:
+        /// a long image history can exceed the shared thumbnail cache, and
+        /// looking evicted entries up on the main thread would decode them
+        /// again during drawing. A prefix the transcript has since
         /// stopped wanting is dropped rather than applied. Images arriving after
         /// the first paint is the case `follow` already exists for.
         private func buildPromptPrefix(
-            _ images: [AppImageAttachment], identifier: String
+            _ images: [AppImageAttachment], messages: [InstructionTranscriptMessage],
+            identifier: String
         ) {
-            guard !images.isEmpty else { return }
+            let allImages = images + messages.flatMap(\.images)
+            guard !allImages.isEmpty else { return }
             Task { [weak self] in
-                await Task.detached(priority: .userInitiated) {
-                    for attachment in images {
-                        _ = SubmittedImageThumbnail.loadThumbnail(
+                let thumbnails = await Task.detached(priority: .userInitiated) {
+                    var loaded: [URL: NSImage] = [:]
+                    for attachment in allImages {
+                        loaded[attachment.fileURL] = SubmittedImageThumbnail.loadThumbnail(
                             at: attachment.fileURL,
                             maximumPixelSize: 720,
                             cacheKey: attachment.sha256)
                     }
+                    return loaded
                 }.value
                 guard let self, self.promptPrefixIdentifier == identifier else { return }
-                let prefix = Self.makePromptPrefix(images)
+                let prefix = Self.makePromptPrefix(images, thumbnails: thumbnails)
                 self.promptPrefix = prefix
+                self.historyImagePrefixes = Dictionary(uniqueKeysWithValues:
+                    messages.enumerated().compactMap { index, message in
+                        guard !message.images.isEmpty else { return nil }
+                        return (index, Self.makePromptPrefix(message.images, thumbnails: thumbnails))
+                    })
                 self.apply(
                     messages: self.messages,
                     response: self.documentController.response,
@@ -1489,29 +1593,32 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         private static func makePromptPrefix(
-            _ images: [AppImageAttachment]
+            _ images: [AppImageAttachment], thumbnails: [URL: NSImage]? = nil
         ) -> NSAttributedString {
             let result = NSMutableAttributedString()
             for attachment in images {
-                // A refused or unreadable image is dropped from the transcript,
-                // which is the same degradation the composer's placeholder tile
-                // gives. The separator therefore keys off what has actually
-                // been written, not off the attachment's index: keyed off the
-                // index, a first image the decode budget refused left the line
-                // starting with a bare gap.
-                guard let image = SubmittedImageThumbnail.loadThumbnail(
-                    at: attachment.fileURL,
-                    maximumPixelSize: 720,
-                    cacheKey: attachment.sha256) else { continue }
+                if result.length > 0 {
+                    result.append(NSAttributedString(string: "\n"))
+                }
+                let decoded: NSImage?
+                if let thumbnails {
+                    decoded = thumbnails[attachment.fileURL]
+                } else {
+                    decoded = SubmittedImageThumbnail.loadThumbnail(
+                        at: attachment.fileURL, maximumPixelSize: 720,
+                        cacheKey: attachment.sha256)
+                }
+                guard let image = decoded else {
+                    result.append(NSAttributedString(
+                        string: "[Saved image unavailable: \(attachment.displayName)]"))
+                    continue
+                }
                 image.size = SubmittedImageThumbnail.fittedSize(
                     image.size,
                     within: CGSize(width: 360, height: 240))
                 let textAttachment = NSTextAttachment()
                 textAttachment.attachmentCell = NSTextAttachmentCell(
                     imageCell: Self.rounded(image))
-                if result.length > 0 {
-                    result.append(NSAttributedString(string: "  "))
-                }
                 result.append(NSAttributedString(attachment: textAttachment))
             }
             return result
