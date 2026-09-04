@@ -17,10 +17,13 @@ public final class AppMCPManager {
     public private(set) var tools: [UUID: [AppMCPTool]] = [:]
     public private(set) var lastChecked: [UUID: Date] = [:]
     public private(set) var mailProgress: [UUID: Int] = [:]
+    public private(set) var diagnostics: [UUID: AppMCPDiagnostics] = [:]
+    public private(set) var pythonInfo: [UUID: AppMCPPythonInfo] = [:]
     public var error: String?
     private let store: AppMCPProfileStore
     private let secrets: any AppMCPSecretStoring
     private let factory: @MainActor () -> any AppMCPClient
+    private let installerFactory: @MainActor () -> AppMCPExchangeInstaller
     private var sessions: [UUID: any AppMCPClient] = [:]
     private var operations: [UUID: Task<Void, Never>] = [:]
     private var generations: [UUID: UUID] = [:]
@@ -30,8 +33,9 @@ public final class AppMCPManager {
     public static let exchangeTools: Set<String> = ["list_messages", "get_message", "list_calendar_events"]
 
     public init(store: AppMCPProfileStore, secrets: any AppMCPSecretStoring,
-                factory: @escaping @MainActor () -> any AppMCPClient = { AppMCPStdioClient() }) {
-        self.store = store; self.secrets = secrets; self.factory = factory
+                factory: @escaping @MainActor () -> any AppMCPClient = { AppMCPStdioClient() },
+                installerFactory: @escaping @MainActor () -> AppMCPExchangeInstaller = { AppMCPExchangeInstaller() }) {
+        self.store = store; self.secrets = secrets; self.factory = factory; self.installerFactory = installerFactory
         do { profiles = try store.load() }
         catch { readableStore = false; self.error = "Saved connections could not be opened. The file was left unchanged: \(store.fileURL.path)" }
     }
@@ -52,6 +56,7 @@ public final class AppMCPManager {
         do { try store.save(updated) }
         catch { try? secrets.write(old, id: profile.id); throw error }
         disconnect(profile.id)
+        diagnostics[profile.id] = nil; pythonInfo[profile.id] = nil
         profiles = updated
         tools[profile.id] = nil
     }
@@ -63,6 +68,7 @@ public final class AppMCPManager {
         let updated = profiles.filter { $0.id != id }
         do { try store.save(updated) } catch { try? secrets.write(old, id: id); throw error }
         disconnect(id); profiles = updated; tools[id] = nil; lastChecked[id] = nil
+        diagnostics[id] = nil; pythonInfo[id] = nil
     }
     public func forgetCredentials(_ id: UUID) throws {
         try secrets.remove(id: id)
@@ -78,23 +84,58 @@ public final class AppMCPManager {
     }
 
     public func installExchange(_ id: UUID, python: String) {
+        setupExchange(id, python: python, install: true)
+    }
+    public func checkPython(_ id: UUID, python: String) {
+        setupExchange(id, python: python, install: false)
+    }
+    private func setupExchange(_ id: UUID, python: String, install: Bool) {
         guard let profile = profiles.first(where: { $0.id == id }), profile.kind == .exchange else { return }
-        guard !statuses.values.contains(.installing) else { return }
+        guard !status(id).isBusy, !statuses.values.contains(.installing) else { return }
+        if install {
+            // The bundled environment is shared. Never rebuild it beneath another live session.
+            for other in profiles where other.kind == .exchange
+                && other.executable == AppMCPExchangeInstaller.installedExecutable.path {
+                disconnect(other.id)
+            }
+        }
         disconnect(id)
+        let report = AppMCPDiagnostics(); diagnostics[id] = report; pythonInfo[id] = nil
+        let path = AppMCPExchangeInstaller.normalizedPythonPath(python)
         let generation = UUID(); generations[id] = generation
-        let installer = AppMCPExchangeInstaller(); installers[id] = installer
-        statuses[id] = .installing
+        let installer = installerFactory(); installers[id] = installer
+        statuses[id] = install ? .installing : .checkingPython
         operations[id] = Task { [weak self] in
             guard let self else { return }
             do {
-                let executable = try await installer.install(python: python)
-                try Task.checkCancellation()
-                guard generations[id] == generation, let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-                var updated = profiles; updated[index].executable = executable
+                report.begin("Save Python selection")
+                guard readableStore, let index = profiles.firstIndex(where: { $0.id == id }) else {
+                    throw AppMCPError.configuration("Saved connections are unavailable.")
+                }
+                var updated = profiles; updated[index].pythonExecutable = path
                 try store.save(updated); profiles = updated
-                statuses[id] = .disconnected
+                report.complete(path)
+                if install {
+                    let executable = try await installer.install(python: path, diagnostics: report) { info in
+                        if self.generations[id] == generation { self.pythonInfo[id] = info }
+                    }
+                    try Task.checkCancellation()
+                    guard generations[id] == generation, let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+                    report.begin("Save connector configuration")
+                    var updated = profiles; updated[index].executable = executable
+                    try store.save(updated); profiles = updated
+                    report.complete("Connector ready. Connect & Verify checks the MCP server and mailbox separately.")
+                } else {
+                    let info = try await installer.checkPython(path, diagnostics: report)
+                    if generations[id] == generation { pythonInfo[id] = info }
+                }
+                try Task.checkCancellation()
+                if generations[id] == generation { statuses[id] = .disconnected }
             } catch {
-                if generations[id] == generation { statuses[id] = .failed(error.localizedDescription) }
+                if generations[id] == generation {
+                    report.fail(error)
+                    statuses[id] = .failed(error.localizedDescription)
+                }
             }
             if generations[id] == generation { operations[id] = nil; installers[id] = nil }
         }
@@ -104,13 +145,18 @@ public final class AppMCPManager {
         guard let profile = profiles.first(where: { $0.id == id }), !status(id).isBusy else { return }
         disconnect(id)
         let generation = UUID(); generations[id] = generation
+        let report = AppMCPDiagnostics(); diagnostics[id] = report
         statuses[id] = .connecting
         operations[id] = Task { [weak self] in
             guard let self else { return }
             let client = factory()
+            var sensitiveValues: [String] = []
             do {
+                report.begin("Check connection settings and credentials")
                 try profile.validate()
                 let credentials = try secrets.read(id: id)
+                sensitiveValues = [credentials.password] + Array(credentials.environment.values)
+                report.redact(sensitiveValues)
                 var environment = credentials.environment.filter { profile.environmentKeys.contains($0.key) }
                 if profile.kind == .exchange {
                     guard !credentials.password.isEmpty else { throw AppMCPError.configuration("Enter your Exchange password in Authentication.") }
@@ -121,13 +167,22 @@ public final class AppMCPManager {
                     if !profile.certificateBundle.isEmpty { environment["REQUESTS_CA_BUNDLE"] = profile.certificateBundle }
                 }
                 sessions[id] = client
-                client.onDisconnect = { [weak self] in
-                    guard let self, self.generations[id] == generation else { return }
-                    self.sessions[id] = nil; self.statuses[id] = .failed(AppMCPError.disconnected.localizedDescription)
+                client.onStage = { [weak self] stage in
+                    guard self?.generations[id] == generation else { return }
+                    report.begin(stage)
                 }
+                client.onDisconnect = { [weak self, weak client] in
+                    guard let self, self.generations[id] == generation else { return }
+                    let message = AppMCPDiagnosticText.clean(client?.lastFailure ?? AppMCPError.disconnected.localizedDescription,
+                                                            secrets: sensitiveValues)
+                    report.fail(AppMCPError.configuration(message))
+                    self.sessions[id] = nil; self.statuses[id] = .failed(message)
+                }
+                report.begin("Start MCP server")
                 try await client.start(executable: profile.executable, arguments: profile.kind == .exchange ? [] : profile.arguments,
                                        directory: profile.workingDirectory, environment: environment)
                 try Task.checkCancellation()
+                report.begin("Discover MCP tools")
                 var discovered: [AppMCPTool] = [], cursor: String?
                 var cursors = Set<String>()
                 repeat {
@@ -149,24 +204,38 @@ public final class AppMCPManager {
                         throw AppMCPError.configuration("Install the bundled Exchange connector to verify authentication and use read-only mail tools.")
                     }
                     statuses[id] = .authenticating
+                    report.complete("Found \(discovered.count) tools.")
+                    report.begin("Verify Exchange sign-in and Inbox access")
                     let check = try await client.request("tools/call", params: .object([
                         "name": .string("check_connection"), "arguments": .object([:])]))
+                    if check["isError"]?.boolValue == true {
+                        let message = check["content"]?.arrayValue?.compactMap { $0["text"]?.stringValue }.joined(separator: "\n") ?? ""
+                        throw AppMCPDiagnosticText.failure("Exchange mailbox verification failed.",
+                                                           details: message, secrets: sensitiveValues)
+                    }
                     guard try Self.toolResult(check)["authenticated"]?.boolValue == true else { throw AppMCPError.serverRejected }
                     discovered.removeAll { !Self.exchangeTools.contains($0.name) }
                 }
                 try Task.checkCancellation()
                 guard generations[id] == generation, sessions[id] === client else { client.stop(); return }
                 tools[id] = discovered
+                report.complete(profile.kind == .exchange ? "Authentication and read-only Inbox access verified."
+                                                           : "Found \(discovered.count) tools.")
                 lastChecked[id] = Date(); statuses[id] = .connected
             } catch {
                 client.stop()
-                if generations[id] == generation { sessions[id] = nil; statuses[id] = .failed(error.localizedDescription) }
+                if generations[id] == generation {
+                    let message = AppMCPDiagnosticText.clean(error.localizedDescription, secrets: sensitiveValues)
+                    report.fail(AppMCPError.configuration(message))
+                    sessions[id] = nil; statuses[id] = .failed(message)
+                }
             }
             if generations[id] == generation { operations[id] = nil }
         }
     }
 
     public func disconnect(_ id: UUID) {
+        diagnostics[id]?.cancel()
         generations[id] = UUID()
         operations.removeValue(forKey: id)?.cancel()
         installers.removeValue(forKey: id)?.cancel()

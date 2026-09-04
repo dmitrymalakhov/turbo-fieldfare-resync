@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
-import TurboFieldfareAppCore
+@testable import TurboFieldfareAppCore
 @testable import TurboFieldfareMacPresentation
 
 @MainActor
@@ -46,6 +46,74 @@ private final class MCPPreviewClient: AppMCPClient {
 @Suite(.serialized)
 @MainActor
 struct MCPConnectionsPresentationTests {
+    @Test func pythonDiscoveryPickerShowsVerifiedVersionsAndManualFallback() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-python-picker-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for version in ["3.13", "3.14", "3.9"] {
+            let path = directory.appendingPathComponent("python\(version)")
+            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path.path)
+        }
+        let discovery = AppMCPPythonDiscovery(locations: [.init(directory: directory, source: "Homebrew")]) { path in
+            let version = URL(fileURLWithPath: path).lastPathComponent.replacingOccurrences(of: "python", with: "")
+            return AppMCPPythonInfo(executable: path, version: version + ".5", major: 3,
+                                   minor: Int(version.split(separator: ".")[1])!, hasVenv: true, hasEnsurepip: true)
+        }
+        discovery.search()
+        for _ in 0..<100 where discovery.isSearching { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(discovery.installations.filter(\.isCompatible).count == 2)
+        let manager = AppMCPManager(store: .init(fileURL: directory.appendingPathComponent("profiles.json")), secrets: MCPUIPreviewSecrets())
+        var profile = AppMCPProfile(); profile.pythonExecutable = directory.appendingPathComponent("python3.13").path
+        let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
+        try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
+        try renderView(MCPPythonSetupView(manager: manager, profile: profile, discovery: discovery)
+            .padding(24).frame(width: 760, height: 600, alignment: .topLeading)
+            .background(Color(nsColor: .windowBackgroundColor)).preferredColorScheme(.light),
+            size: NSSize(width: 760, height: 600), to: screenshots.appendingPathComponent("python-discovery.png"))
+    }
+
+    @Test func diagnosticsRenderPythonSuccessAndExpandedInstallFailure() async throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-diagnostic-ui-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let python = directory.appendingPathComponent("python")
+        try """
+        #!/bin/sh
+        if [ "$1" = "-I" ]; then
+            printf '%s\\n' '{"executable":"/opt/homebrew/bin/python3.13","version":"3.13.5","major":3,"minor":13,"hasVenv":true,"hasEnsurepip":true}'
+        else
+            mkdir -p .venv/bin
+            cat > .venv/bin/python <<'CHILD'
+        #!/bin/sh
+        printf '%s\\n' 'SSLError: CERTIFICATE_VERIFY_FAILED' >&2
+        exit 1
+        CHILD
+            chmod +x .venv/bin/python
+        fi
+        """.write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: python.path)
+        let manager = AppMCPManager(store: .init(fileURL: directory.appendingPathComponent("profiles.json")), secrets: MCPUIPreviewSecrets(),
+                                    installerFactory: { AppMCPExchangeInstaller(directory: directory.appendingPathComponent("connector")) })
+        var profile = AppMCPProfile(); profile.server = "mail.company.com"
+        profile.email = "you@company.com"; profile.username = "CORP\\username"
+        try manager.save(profile, credentials: .init())
+        manager.installExchange(profile.id, python: python.path)
+        for _ in 0..<500 where manager.status(profile.id).isBusy { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(manager.pythonInfo[profile.id]?.version == "3.13.5")
+        let report = try #require(manager.diagnostics[profile.id])
+        #expect(report.steps.last?.state == .failed)
+        if case .failed = manager.status(profile.id) {} else { Issue.record("Expected installation failure") }
+        let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
+        try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
+        try renderView(MCPDiagnosticsView(report: report).padding(24).background(Color(nsColor: .windowBackgroundColor)).preferredColorScheme(.light),
+                       size: NSSize(width: 750, height: 600), to: screenshots.appendingPathComponent("diagnostics-error.png"))
+        try render(manager, selection: profile.id, to: screenshots.appendingPathComponent("python-verified.png"))
+        manager.stopAll()
+    }
+
     @Test func testConsoleRendersRequestDataAndToolErrorWithoutAModel() async throws {
         _ = NSApplication.shared
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-test-ui-\(UUID())")

@@ -18,6 +18,7 @@ private final class MCPTestClient: AppMCPClient {
     var environment: [String: String] = [:]
     var calls: [(String, AppMCPValue)] = []
     var authenticationFails = false
+    var authenticationError = ""
     var mailCount = 237
     var mailDelay: Duration?
     var toolReply: AppMCPValue?
@@ -35,7 +36,8 @@ private final class MCPTestClient: AppMCPClient {
         }
         let name = params["name"]?.stringValue
         if name == "check_connection" {
-            return .object(["isError": .bool(authenticationFails), "structuredContent": .object(["authenticated": .bool(true)])])
+            return .object(["isError": .bool(authenticationFails), "structuredContent": .object(["authenticated": .bool(true)]),
+                            "content": .array([.object(["type": .string("text"), "text": .string(authenticationError)])])])
         }
         if let toolReply { return toolReply }
         if name == "list_messages" {
@@ -139,6 +141,53 @@ struct AppMCPTests {
         if case .failed = manager.status(value.id) {} else { Issue.record("Authentication failure must remain visible") }
         #expect(manager.lastChecked[value.id] == nil)
         #expect(client.stopCount > 0)
+    }
+
+    @Test func authenticationDiagnosticsPreserveTheFailingStageAndHidePassword() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(); client.authenticationFails = true
+        client.authenticationError = "InvalidCredentials: HTTP 401 auth-secret"
+        let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(value, credentials: .init(password: "auth-secret"))
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        let report = try #require(manager.diagnostics[value.id])
+        #expect(report.steps.last?.title == "Verify Exchange sign-in and Inbox access")
+        #expect(report.steps.last?.state == .failed)
+        #expect(report.text.contains("HTTP 401") && report.text.contains("EWS mailbox permissions"))
+        #expect(!report.text.contains("auth-secret"))
+        if case .failed(let message) = manager.status(value.id) { #expect(!message.contains("auth-secret")) }
+        else { Issue.record("Authentication must fail") }
+        client.authenticationFails = false
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        #expect(manager.status(value.id) == .connected)
+        #expect(manager.diagnostics[value.id]?.steps.allSatisfy { $0.state == .passed } == true)
+        manager.stopAll()
+    }
+
+    @Test func pythonSelectionPersistsButOnlyACompletedCheckShowsVerified() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let path = store.fileURL.deletingLastPathComponent().appendingPathComponent("fixture-python")
+        try """
+        #!/bin/sh
+        printf '%s\\n' '{"executable":"/fixture/python","version":"3.13.5","major":3,"minor":13,"hasVenv":true,"hasEnsurepip":true}'
+        """.write(to: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path.path)
+        let value = profile(), secrets = MCPTestSecrets()
+        let manager = AppMCPManager(store: store, secrets: secrets)
+        try manager.save(value, credentials: .init(password: "local-only"))
+        manager.checkPython(value.id, python: path.path); try await settle(manager, id: value.id)
+        #expect(manager.status(value.id) == .disconnected, "Python success is not mailbox authentication")
+        #expect(manager.pythonInfo[value.id]?.version == "3.13.5")
+        #expect(try store.load().first?.pythonExecutable == path.path)
+        let restored = AppMCPManager(store: store, secrets: secrets)
+        #expect(restored.pythonInfo[value.id] == nil)
+        manager.checkPython(value.id, python: path.path + "-missing"); try await settle(manager, id: value.id)
+        #expect(manager.pythonInfo[value.id] == nil)
+        #expect(manager.diagnostics[value.id]?.steps.last?.state == .failed)
+        let data = try JSONEncoder().encode(value)
+        let legacy = try JSONDecoder().decode(AppMCPProfile.self, from: data)
+        #expect(legacy.pythonExecutable == nil)
+        manager.stopAll()
     }
 
     @Test func exchangeRejectsWriteToolsEvenWhenPersistedAndAdvertisedAsReadOnly() async throws {

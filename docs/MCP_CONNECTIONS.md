@@ -21,12 +21,59 @@ preset in this list. Its mail/calendar controls appear only within that connecti
 3. Choose NTLM or Basic over TLS. NTLM is the default, matching the colleague
    connector this integration is based on. Set the mailbox time zone;
    `Europe/Moscow` is the default. Save the connection.
-4. Choose **Install Connector**. A detected Python executable is prefilled;
+4. In **Python & Exchange connector**, click **Find Python** and select a version
+   under **Installed Python**. The app finds and checks installed interpreters;
+   a compatible installation is selected automatically for a new connection.
+   Python 3.13 is preferred when available. No manual path entry is required.
+   For a custom installation, expand **Choose a file or enter a path manually**,
+   select its executable, then click **Check Python**. The app reports its version,
+   resolved executable path, and availability of `venv` and `ensurepip`. This
+   check does not download packages or access the mailbox. The chosen path is
+   saved per connection; verification is repeated after restarting the app.
+5. Choose **Install Connector**. A detected Python executable is prefilled;
    choose another Python 3.10+ executable if needed. Installation downloads
    pinned Python dependencies into a private environment under
    `~/Library/Application Support/TurboFieldfare/MCP/exchange-0.2.0/`.
-5. Choose **Connect & Verify**. The app initializes MCP, discovers tools, and
+6. Choose **Connect & Verify**. The app initializes MCP, discovers tools, and
    verifies actual Inbox read access. “Connected” means all three succeeded.
+
+**Find Python** checks Homebrew, Python.org framework installations, pyenv,
+Conda environments, asdf, uv and executable directories in PATH. It avoids
+duplicate symlinks, relative PATH entries and version-manager shims; it does
+not recursively scan projects or the whole disk. An old/incomplete interpreter
+or a process that cannot start appears under **Unavailable installations** with
+the reason. The search can be cancelled, checks at most 32 interpreters with
+individual timeouts, and reports when the search budget is exhausted. Use the
+manual file picker for installations outside these locations. Search results
+remain in memory; the chosen path is saved when checking or installing.
+
+**Connection diagnostics** shows the last attempt, each completed step, and the
+step that failed. Installation failures include the command's exit code and
+bounded Python/pip output. Server failures include the MCP error code/message
+or process exit code and stderr. Common certificate, authentication, DNS,
+network and missing-package errors include a suggested next step. Error details
+open automatically and can be selected or copied with **Copy Diagnostics**.
+Successful Python verification remains visible when later installation or
+Exchange authentication fails; it does not mean the mailbox is connected.
+
+Use **Install / Repair Connector** to retry installation even when an executable
+was previously configured. A prior ready marker no longer bypasses verification:
+installation checks imports and package compatibility before reporting success.
+Repair recreates the private `.venv` with the selected base Python and disconnects
+other connections using that shared environment. It does not change the base
+Python's packages. Choose a Python outside the connector's own `.venv` to repair it.
+The Python field takes the interpreter (`python3`); **Advanced → Existing MCP
+executable** takes the connector (`exchange-mcp`). Selecting Python itself as
+the MCP server cannot complete the MCP handshake. Disconnect a running connection
+before checking or repairing its environment.
+
+Setup diagnostics remain in memory for the current app session and are not
+automatically written to disk, sent to a server or included in chat context.
+Known credentials and common credential/header/URL patterns are masked before
+display or copying. Protocol stdout, request parameters, successful tool responses
+and JSON-RPC `error.data` are excluded from setup logs. A third-party server
+controls its stderr and error messages, so its diagnostics may still contain
+other data that server chose to log. Copying is an explicit local clipboard action.
 
 The Exchange endpoint is EWS; enter its hostname without `https://` or
 `/EWS/Exchange.asmx`. VPN may be required by the organization. For a corporate

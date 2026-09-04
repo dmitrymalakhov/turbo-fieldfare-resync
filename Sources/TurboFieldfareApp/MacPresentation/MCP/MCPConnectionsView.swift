@@ -10,7 +10,6 @@ public struct MCPConnectionsView: View {
     @State private var editing: AppMCPProfile?
     @State private var testing: AppMCPProfile?
     @State private var removing: AppMCPProfile?
-    @State private var python = AppMCPExchangeInstaller.suggestedPython
     @State private var period = "today"
     @State private var folder = "Inbox"
     @State private var snapshot: AppMCPMailSnapshot?
@@ -161,12 +160,25 @@ public struct MCPConnectionsView: View {
                         }
                     }
                     if case .failed(let message) = manager.status(profile.id) {
-                        Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                        Text(message.components(separatedBy: "\n").first ?? message)
+                            .font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                    if profile.kind == .exchange, let python = manager.pythonInfo[profile.id] {
+                        Label("Last Python check: \(python.version) · passed", systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
                     }
                     if let checked = manager.lastChecked[profile.id] {
                         Text("Last verified \(checked.formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+
+                if let report = manager.diagnostics[profile.id], !report.steps.isEmpty {
+                    card { MCPDiagnosticsView(report: report) }
+                }
+
+                if profile.kind == .exchange {
+                    card { MCPPythonSetupView(manager: manager, profile: profile).id(profile.id) }
                 }
 
                 card {
@@ -181,20 +193,6 @@ public struct MCPConnectionsView: View {
                         LabeledContent("Environment variables", value: "\(profile.environmentKeys.count) saved in Keychain")
                     }
                     Button("Edit Connection & Credentials…") { editing = profile }
-                }
-
-                if profile.kind == .exchange && profile.executable.isEmpty {
-                    card {
-                        sectionTitle("Set up the Exchange connector", symbol: "shippingbox")
-                        Text("Install the included read-only connector once. This downloads its Python dependencies.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        HStack {
-                            TextField("Python 3.10+ executable", text: $python).textFieldStyle(.roundedBorder)
-                            Button("Choose…") { chooseFile { python = $0 } }
-                        }
-                        Button("Install Connector") { manager.installExchange(profile.id, python: python) }
-                            .disabled(python.isEmpty || manager.status(profile.id).isBusy)
-                    }
                 }
 
                 toolsCard(profile)
@@ -389,6 +387,8 @@ struct MCPProfileEditor: View {
                             HStack { TextField("Existing MCP executable (optional)", text: $profile.executable)
                                 Button("Choose…") { chooseFile { profile.executable = $0 } } }
                             Text("Leave the executable empty to install the included connector after saving.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text("This field is for exchange-mcp, not Python. Choose Python in the connector setup after saving.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }

@@ -12,6 +12,7 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
     public var name = "Exchange"
     public var kind: AppMCPKind = .exchange
     public var executable = ""
+    public var pythonExecutable: String?
     public var arguments: [String] = []
     public var workingDirectory = ""
     public var server = ""
@@ -78,10 +79,11 @@ public struct AppMCPTool: Equatable, Identifiable, Sendable {
 }
 
 public enum AppMCPStatus: Equatable, Sendable {
-    case disconnected, installing, connecting, authenticating, connected, failed(String)
+    case disconnected, checkingPython, installing, connecting, authenticating, connected, failed(String)
     public var title: String {
         switch self {
         case .disconnected: "Disconnected"
+        case .checkingPython: "Checking Python…"
         case .installing: "Installing connector…"
         case .connecting: "Connecting…"
         case .authenticating: "Checking mailbox access…"
@@ -90,7 +92,7 @@ public enum AppMCPStatus: Equatable, Sendable {
         }
     }
     public var isBusy: Bool {
-        switch self { case .installing, .connecting, .authenticating: true; default: false }
+        switch self { case .checkingPython, .installing, .connecting, .authenticating: true; default: false }
     }
 }
 
