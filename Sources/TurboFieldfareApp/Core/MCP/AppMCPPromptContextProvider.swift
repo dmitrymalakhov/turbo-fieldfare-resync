@@ -8,12 +8,14 @@ public final class AppMCPPromptContextProvider: AppPromptContextProviding {
 
     public func prepare(prompt: String, recentUserPrompts: [String],
                         progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
+        // Mail routing is an optional enhancement. Without a configured Exchange
+        // profile, every prompt belongs to the ordinary local-model chat, including
+        // prompts that contain words such as "mail" or "почта".
+        let profiles = manager.profiles.filter { $0.kind == .exchange }
+        guard !profiles.isEmpty else { return nil }
+
         let directIntent = try AppMCPMailIntent.resolve(prompt)
         guard let intent = try directIntent ?? AppMCPMailIntent.resolve(prompt, previousUserPrompt: recentUserPrompts.last) else { return nil }
-        let profiles = manager.profiles.filter { $0.kind == .exchange }
-        guard !profiles.isEmpty else {
-            throw AppMCPError.configuration("Добавь почтовый сервер в MCP Connections → Add MCP Server → Microsoft Exchange. Затем повтори запрос в чате.")
-        }
         let normalized = AppMCPMailIntent.normalize(prompt)
         let named = profiles.filter {
             [$0.name, $0.email].contains { !$0.isEmpty && normalized.contains(AppMCPMailIntent.normalize($0)) }

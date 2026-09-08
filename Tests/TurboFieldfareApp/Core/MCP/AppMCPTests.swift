@@ -145,9 +145,8 @@ struct AppMCPTests {
         #expect(manager.lastChecked[value.id] == nil)
         let provider = AppMCPPromptContextProvider(manager: manager)
         let callsAfterRemoval = client.calls.count
-        await #expect(throws: AppMCPError.self) {
-            try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
-        }
+        let context = try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
+        #expect(context == nil)
         #expect(client.calls.count == callsAfterRemoval, "A removed integration must never receive chat requests")
     }
 
@@ -167,9 +166,8 @@ struct AppMCPTests {
         #expect(secrets.values[value.id]?.password == "test-password")
         let provider = AppMCPPromptContextProvider(manager: manager)
         let callsAfterRemoval = client.calls.count
-        await #expect(throws: AppMCPError.self) {
-            try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
-        }
+        let context = try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
+        #expect(context == nil)
         #expect(client.calls.count == callsAfterRemoval)
     }
 
@@ -545,12 +543,30 @@ struct AppMCPTests {
         #expect(client.calls.isEmpty)
     }
 
-    @Test func promptRequiresAnUnambiguousEnabledAccount() async throws {
+    @Test func mailWordsDoNotBlockOrdinaryChatWithoutExchange() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        var local = AppMCPProfile(kind: .stdio)
+        local.name = "Local tools"; local.executable = "/test/local-mcp"
+        try manager.save(local, credentials: .init())
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        model.promptText = "Почта за сегодня"
+
+        model.submitPrompt(); try await waitForPrompt(model)
+
+        #expect(model.error == nil)
+        #expect(model.selectedChat.messages.count == 2)
+        #expect(model.selectedChat.messages.first?.content == "Почта за сегодня")
+        #expect(model.outputText.hasPrefix("Answer"))
+        #expect(client.calls.isEmpty)
+    }
+
+    @Test func promptRequiresAnUnambiguousEnabledExchangeAccount() async throws {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let client = MCPTestClient(); client.mailCount = 0
         let manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
         let provider = AppMCPPromptContextProvider(manager: manager)
-        await #expect(throws: AppMCPError.self) { try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in }) }
+        #expect(try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in }) == nil)
         var work = profile(); work.name = "Рабочий ящик"
         var other = profile(); other.name = "Другой ящик"
         try manager.save(work, credentials: .init(password: "test"))

@@ -168,6 +168,9 @@ message such as **«Разбери почту за сегодня»**, **«Чт�
 The app resolves the requested period, connects and verifies the saved account if
 needed, reads the mail and adds it to the model's reference context before
 generating the answer. Progress and cancellation are available in the composer.
+If no Exchange integration is configured, the MCP mail router stays inactive:
+messages containing words such as **«почта»**, **«письмо»** or **“email”** go
+straight to the local model and cannot block an ordinary chat.
 The sent message displays the account, period, folder and loaded-message count.
 Before inference, the app checks whether the new reference text fits with the
 current prompt. If necessary it reduces the included text, marks it as truncated
