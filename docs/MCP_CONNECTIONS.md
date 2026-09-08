@@ -78,22 +78,50 @@ other data that server chose to log. Copying is an explicit local clipboard acti
 The Exchange endpoint is EWS; enter its hostname without `https://` or
 `/EWS/Exchange.asmx`. VPN may be required by the organization. For a corporate
 certificate authority, open **Certificates → Choose Certificates… → Choose from
-Keychain…**. Search by name, issuer or SHA-256 fingerprint, select the corporate
-issuing CA(s), then **Use Selected Certificates → Save & Verify**. A shortcut
+Keychain…**. Choose **Find for Server** to identify a matching certificate chain,
+then **Select Suggested Chain → Use Selected Certificates → Save & Verify**.
+Manual search by name, issuer or SHA-256 fingerprint is also available. A shortcut
 also appears beside certificate-related connection errors. The certificate
 section is also available when creating or editing an Exchange connection.
 
 The picker reads public certificates from the Mac's keychain search list and
 user, administrator and system certificate trust domains. It displays issuer,
-expiry and fingerprint, removes duplicates and rejects expired, not-yet-valid
-and non-CA certificates. It does not read private keys, modify Keychain trust,
-perform trust evaluation or fetch certificates/revocation information over the
-network. Selecting a CA explicitly adds trust for this Exchange connection;
-this is not automatic mirroring of all macOS trust policies.
+expiry, fingerprint and certificate type, and removes duplicates. **All certificates**
+is the default: self-signed roots and self-signed server certificates are visible.
+Filters show **For this server**, **Self-signed / self-issued**, or **CA certificates**.
+Expired/not-yet-valid certificates stay visible with a reason they cannot be selected.
+Ordinary server/personal certificates require their issuing CA; self-signed server
+certificates can be explicitly selected. Self-signatures are verified for RSA
+PKCS#1 SHA-1/224/256/384/512 and ECDSA SHA-1/224/256/384/512. Certificates whose
+issuer equals their subject but whose self-signature is not verified (including
+unsupported signature algorithms) remain visible as **Self-issued**. Matching
+issuer and subject names alone does not establish a self-signature.
+
+Listing certificates is local and never reads private keys or modifies Keychain
+trust. **Find for Server** explicitly opens a TLS-only connection to the configured
+Exchange hostname on port 443, reads certificates, then rejects/closes the handshake.
+It sends no HTTP request, login, password or mailbox data. DNS resolution and TLS
+ClientHello/SNI are necessary to contact that host. The probe has a 10-second timeout,
+supports cancellation and does not run automatically when opening the picker.
+
+The returned chain is compared with available candidates using macOS Security,
+checking the hostname, certificate dates and cryptographic path to each candidate.
+Issuer and revocation network fetches are disabled; only local material/cache may
+be used. Certificates with merely similar names are not marked as matching. A
+successful match is sorted first and switches to **For this server**. The suggested
+chain includes required intermediates (including ones supplied by the server) and
+ends at a candidate from the local list. Server-supplied roots are not silently
+trusted, and a self-signed server only receives a suggestion if it is already a
+candidate. **Select Suggested Chain** prepares the selection for review; **Use
+Selected Certificates** applies it to the editor. No matching chain, an expired
+server, network failure and timeout have explicit explanations. Local matching
+does not claim the Python connector or Exchange authentication has succeeded;
+**Save & Verify** still performs that check. Selecting certificates explicitly adds
+trust for this connection, rather than mirroring every macOS trust policy.
 
 **Choose File…** accepts a PEM certificate bundle or a DER-encoded CER/CRT/DER
 file; it checks the contents rather than relying on the extension. Files must
-contain only CA certificates (no private keys or P12/PFX identities), at most
+contain only CA or supported self-signed server certificates (no private keys or P12/PFX identities), at most
 128 certificates and 1 MB. Selected public certificates are copied into the
 connection profile, so moving the original file does not break the connection.
 After certificate renewal, select the replacement. Existing manually configured
@@ -117,8 +145,13 @@ OAuth/Graph flow in this connector.
 
 Credentials are stored in macOS Keychain (`TurboFieldfare.MCP`). They are passed
 only to the connector process, not to Gemma, command-line arguments or profile
-JSON. The **Authentication** card opens the editing form. The connection menu
-also provides **Forget Credentials** and **Remove Connection**.
+JSON. The **Authentication** card opens the editing form. **Remove Integration…**
+is available in the connection header, the overview and the sidebar context
+menu. After confirmation it immediately removes the server from chat routing,
+stops its MCP process, deletes its profile, Keychain credentials and generated
+per-connection certificate file. If macOS refuses a local cleanup step, the
+integration remains removed and the app reports exactly what still needs manual
+cleanup. The connection menu also provides **Forget Credentials**.
 
 Profiles live in
 `~/Library/Application Support/TurboFieldfare/mcp-connections.json`.
@@ -258,6 +291,9 @@ are described according to their server's annotations, not guaranteed read-only.
 - `AppMCPCertificatesTests`: public certificate parsing, validity and CA checks,
   rejection of private keys/malformed or oversized files, per-connection PEM
   preparation, copied selections and compatibility with existing profiles.
+- `AppMCPServerCertificatesTests`: issuer paths, lookalike CA rejection, hostname
+  and expiry rejection, self-signed servers, offline trust policy, host validation
+  and cancellation before probing. Fixtures use synthetic certificates only.
 - `MCPConnectionsPresentationTests`: offscreen rendering of the common overview,
   empty state, server picker, local-server settings, Exchange detail and
   authentication form, plus diagnostic request/data/error states without loading a model.

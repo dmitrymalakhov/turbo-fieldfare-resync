@@ -48,15 +48,21 @@ public struct MCPConnectionsView: View {
         .sheet(isPresented: $addingConnection) {
             MCPNewConnectionView(manager: manager) { saved in selection = saved }
         }
-        .confirmationDialog("Remove this connection?", isPresented: Binding(
+        .confirmationDialog(removing.map { "Remove \($0.name)?" } ?? "Remove MCP integration?", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
-                Button("Remove Connection", role: .destructive) {
+                Button("Remove Integration", role: .destructive) {
                     guard let removing else { return }
-                    do { try manager.remove(removing.id); selection = nil }
+                    do { try manager.remove(removing.id) }
                     catch { manager.error = error.localizedDescription }
+                    if !manager.profiles.contains(where: { $0.id == removing.id }) {
+                        stopReading()
+                        selection = nil
+                    }
                     self.removing = nil
                 }
-            } message: { Text("The saved connection and its Keychain credentials will be removed.") }
+            } message: {
+                Text("This stops its MCP process and removes it from chat, saved settings and Keychain credentials. This cannot be undone.")
+            }
         .alert("Connections", isPresented: Binding(get: { manager.error != nil }, set: { if !$0 { manager.error = nil } })) {
             Button("OK") { manager.error = nil }
         } message: { Text(manager.error ?? "") }
@@ -68,7 +74,8 @@ public struct MCPConnectionsView: View {
             detail(profile)
         } else {
             MCPOverviewView(manager: manager, openConnection: { selection = $0 },
-                            addConnection: { addingConnection = true })
+                            addConnection: { addingConnection = true },
+                            removeConnection: { removing = $0 })
         }
     }
 
@@ -111,7 +118,11 @@ public struct MCPConnectionsView: View {
                             Circle().fill(.green).frame(width: 6, height: 6).accessibilityLabel("Connected")
                         }
                     }
-                    .padding(.vertical, 6).tag(profile.id)
+                    .padding(.vertical, 6)
+                    .contextMenu {
+                        Button("Remove Integration…", role: .destructive) { removing = profile }
+                    }
+                    .tag(profile.id)
                 }
             }
             .listStyle(.sidebar)
@@ -134,6 +145,12 @@ public struct MCPConnectionsView: View {
                         Text(profile.kind == .exchange ? profile.email : profile.kind.title).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button(role: .destructive) { removing = profile } label: {
+                        Label("Remove Integration…", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .accessibilityLabel("Remove MCP integration \(profile.name)")
                     Menu {
                         Button("Edit Connection…") { editing = profile }
                         Button("Forget Credentials") {
@@ -141,7 +158,7 @@ public struct MCPConnectionsView: View {
                             catch { manager.error = error.localizedDescription }
                         }
                         Divider()
-                        Button("Remove Connection…", role: .destructive) { removing = profile }
+                        Button("Remove Integration…", role: .destructive) { removing = profile }
                     } label: { Image(systemName: "ellipsis").frame(width: 26, height: 26) }
                     .menuStyle(.borderlessButton).fixedSize().help("Connection options")
                 }
@@ -187,7 +204,7 @@ public struct MCPConnectionsView: View {
                 if profile.kind == .exchange {
                     card {
                         sectionTitle("Certificates", symbol: "checkmark.shield")
-                        Text(profile.selectedCertificates.map { "\($0.certificates.count) CA certificate(s) · \($0.source)" }
+                        Text(profile.selectedCertificates.map { "\($0.certificates.count) certificate(s) · \($0.source)" }
                              ?? (profile.certificateBundle.isEmpty ? "Python default CA certificates" : "Custom CA bundle"))
                             .font(.callout).foregroundStyle(.secondary)
                         Button("Choose Certificates…") { editingCertificates = profile }

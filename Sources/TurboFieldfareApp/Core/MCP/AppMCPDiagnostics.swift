@@ -70,7 +70,7 @@ enum AppMCPDiagnosticText {
     static func hint(for text: String) -> String {
         let value = text.lowercased()
         if value.contains("certificate_verify_failed") || value.contains("sslerror") || value.contains("certificate verify failed") {
-            return "Python may not see a corporate CA installed in macOS. Open Certificates → Choose from Keychain, select the issuing corporate CA, save and Connect & Verify again. You can also choose a PEM/CER/CRT/DER certificate file. If it still fails, check the server's certificate chain with IT. For package downloads, configure pip's trusted CA separately. TLS verification remains enabled."
+            return "Python may not see a corporate CA installed in macOS. Open Certificates → Choose from Keychain → Find for Server to identify a matching chain. Self-signed certificates are also shown. Select the certificates, save and verify again. You can also choose a PEM/CER/CRT/DER file. If no chain matches, check the hostname and certificate chain with IT. Package downloads use pip's separate CA configuration. TLS verification remains enabled."
         }
         if value.contains("unauthorized") || value.contains("invalidcredentials") || value.contains("401") || value.contains("accessdenied") || value.contains("403") {
             return "Check Authentication: username (DOMAIN\\username), password, NTLM/Basic, and EWS mailbox permissions."

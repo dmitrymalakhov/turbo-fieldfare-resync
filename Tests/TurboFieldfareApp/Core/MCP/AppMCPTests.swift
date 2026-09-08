@@ -6,9 +6,13 @@ import Testing
 @MainActor
 private final class MCPTestSecrets: AppMCPSecretStoring {
     var values: [UUID: AppMCPCredentials] = [:]
+    var removeError: Error?
     func read(id: UUID) throws -> AppMCPCredentials { values[id] ?? .init() }
     func write(_ credentials: AppMCPCredentials, id: UUID) throws { values[id] = credentials }
-    func remove(id: UUID) throws { values[id] = nil }
+    func remove(id: UUID) throws {
+        if let removeError { throw removeError }
+        values[id] = nil
+    }
 }
 
 @MainActor
@@ -113,6 +117,60 @@ struct AppMCPTests {
         try manager.remove(value.id)
         #expect(secrets.values[value.id] == nil)
         #expect(try store.load().isEmpty)
+    }
+
+    @Test func removingIntegrationStopsItAndCleansEveryLocalArtifact() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let secrets = MCPTestSecrets(), client = MCPTestClient(), value = profile()
+        let manager = AppMCPManager(store: store, secrets: secrets, factory: { client })
+        try manager.save(value, credentials: .init(password: "test-password"))
+        try manager.setCertificates(.init(certificates: [MCPCertificateFixtures.root], source: "Test"), for: value.id)
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        #expect(manager.status(value.id) == .connected)
+        let certificatePath = try #require(client.environment["REQUESTS_CA_BUNDLE"])
+        #expect(FileManager.default.fileExists(atPath: certificatePath))
+        #expect(manager.tools[value.id] != nil)
+        #expect(manager.diagnostics[value.id] != nil)
+
+        try manager.remove(value.id)
+
+        #expect(manager.profiles.isEmpty)
+        #expect(try store.load().isEmpty)
+        #expect(secrets.values[value.id] == nil)
+        #expect(client.stopCount > 0)
+        #expect(!FileManager.default.fileExists(atPath: certificatePath))
+        #expect(manager.tools[value.id] == nil)
+        #expect(manager.diagnostics[value.id] == nil)
+        #expect(manager.pythonInfo[value.id] == nil)
+        #expect(manager.lastChecked[value.id] == nil)
+        let provider = AppMCPPromptContextProvider(manager: manager)
+        let callsAfterRemoval = client.calls.count
+        await #expect(throws: AppMCPError.self) {
+            try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
+        }
+        #expect(client.calls.count == callsAfterRemoval, "A removed integration must never receive chat requests")
+    }
+
+    @Test func keychainCleanupFailureDoesNotKeepIntegrationInChat() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let secrets = MCPTestSecrets(), client = MCPTestClient(), value = profile()
+        let manager = AppMCPManager(store: store, secrets: secrets, factory: { client })
+        try manager.save(value, credentials: .init(password: "test-password"))
+        manager.connect(value.id); try await settle(manager, id: value.id)
+        secrets.removeError = AppMCPError.configuration("Keychain fixture is locked")
+
+        #expect(throws: AppMCPError.self) { try manager.remove(value.id) }
+
+        #expect(manager.profiles.isEmpty)
+        #expect(try store.load().isEmpty)
+        #expect(client.stopCount > 0)
+        #expect(secrets.values[value.id]?.password == "test-password")
+        let provider = AppMCPPromptContextProvider(manager: manager)
+        let callsAfterRemoval = client.calls.count
+        await #expect(throws: AppMCPError.self) {
+            try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
+        }
+        #expect(client.calls.count == callsAfterRemoval)
     }
 
     @Test func certificateChoiceReachesOnlyExchangeAndCanBeResetWithoutChangingCredentials() async throws {

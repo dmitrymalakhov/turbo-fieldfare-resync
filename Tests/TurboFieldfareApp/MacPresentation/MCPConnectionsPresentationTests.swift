@@ -50,17 +50,30 @@ struct MCPConnectionsPresentationTests {
         _ = NSApplication.shared
         let file = try #require(Bundle.module.url(forResource: "mcp-corporate-ca", withExtension: "der", subdirectory: "Fixtures"))
         let selection = try AppMCPCertificates.readFile(file)
-        let certificates = try AppMCPCertificates.inspect(selection)
+        let selfSignedFile = try #require(Bundle.module.url(forResource: "mcp-matching-selfSignedServer", withExtension: "der", subdirectory: "Fixtures"))
+        let certificates = try AppMCPCertificates.inspect(selection) + [AppMCPCertificate(der: Data(contentsOf: selfSignedFile))]
         let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
         try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
-        try renderView(MCPKeychainCertificatePicker(certificates: certificates) { _ in }
-            .preferredColorScheme(.light), size: NSSize(width: 720, height: 650),
+        try renderView(MCPKeychainCertificatePicker(host: "mail.example.invalid", certificates: certificates) { _ in }
+            .preferredColorScheme(.light), size: NSSize(width: 780, height: 750),
             to: screenshots.appendingPathComponent("certificate-picker.png"))
         var profile = AppMCPProfile(); profile.selectedCertificates = selection
         try renderView(MCPCertificateSettingsView(profile: .constant(profile)).padding(24)
             .frame(width: 620, height: 390, alignment: .topLeading)
             .background(Color(nsColor: .windowBackgroundColor)).preferredColorScheme(.light),
             size: NSSize(width: 620, height: 390), to: screenshots.appendingPathComponent("certificate-selected.png"))
+
+        let rootFile = try #require(Bundle.module.url(forResource: "mcp-matching-root", withExtension: "der", subdirectory: "Fixtures"))
+        let issuerFile = try #require(Bundle.module.url(forResource: "mcp-matching-intermediate", withExtension: "der", subdirectory: "Fixtures"))
+        let serverFile = try #require(Bundle.module.url(forResource: "mcp-matching-server", withExtension: "der", subdirectory: "Fixtures"))
+        let root = try AppMCPCertificates.inspect(AppMCPCertificates.readFile(rootFile))[0]
+        let issuer = try AppMCPCertificates.inspect(AppMCPCertificates.readFile(issuerFile))[0]
+        let server = try AppMCPCertificate(der: Data(contentsOf: serverFile))
+        let suggested = AppMCPCertificateSuggestion(host: "mail.example.invalid", serverCertificate: server,
+            matchingIDs: [root.id], suggestedChain: [issuer, root], explanation: "A certificate path and hostname were verified locally for mail.example.invalid. Select the suggested chain, then Save & Verify to test the Python connector.")
+        try renderView(MCPKeychainCertificatePicker(host: "mail.example.invalid", certificates: certificates + [root], suggestion: suggested) { _ in }
+            .preferredColorScheme(.light), size: NSSize(width: 780, height: 750),
+            to: screenshots.appendingPathComponent("certificate-matching.png"))
     }
 
     @Test func pythonDiscoveryPickerShowsVerifiedVersionsAndManualFallback() async throws {

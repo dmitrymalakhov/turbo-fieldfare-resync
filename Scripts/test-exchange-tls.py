@@ -36,9 +36,9 @@ class ExchangeTLSTests(unittest.TestCase):
         self.ca_file = self.root / "ca.pem"
         self.ca_file.write_bytes(self.ca.public_bytes(serialization.Encoding.PEM))
 
-    def certificate(self, ca=False, expired=False):
+    def certificate(self, ca=False, expired=False, self_signed=False):
         subject = self.name if ca else x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mail.example.invalid")])
-        builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(self.name)
+        builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject if self_signed else self.name)
                    .public_key(self.key.public_key()).serial_number(x509.random_serial_number())
                    .not_valid_before(self.now - timedelta(days=2))
                    .not_valid_after(self.now + timedelta(days=-1 if expired else 365))
@@ -64,9 +64,9 @@ class ExchangeTLSTests(unittest.TestCase):
                 self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
                 return context
 
-    def handshake(self, client_context, hostname="mail.example.invalid", expired=False):
+    def handshake(self, client_context, hostname="mail.example.invalid", expired=False, certificate=None):
         server_cert = self.root / "server.pem"
-        server_cert.write_bytes(self.certificate(expired=expired).public_bytes(serialization.Encoding.PEM))
+        server_cert.write_bytes((certificate or self.certificate(expired=expired)).public_bytes(serialization.Encoding.PEM))
         server_key = self.root / "server.key"
         server_key.write_bytes(self.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                                      serialization.NoEncryption()))
@@ -101,6 +101,15 @@ class ExchangeTLSTests(unittest.TestCase):
             self.handshake(self.client_context(self.ca_file), hostname="wrong.example.invalid")
         with self.assertRaisesRegex(ssl.SSLCertVerificationError, "certificate has expired"):
             self.handshake(self.client_context(self.ca_file), expired=True)
+
+    def test_explicit_self_signed_server_certificate_still_checks_hostname(self):
+        certificate = self.certificate(self_signed=True)
+        self.ca_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+        self.handshake(self.client_context(self.ca_file), certificate=certificate)
+        with self.assertRaisesRegex(ssl.SSLCertVerificationError, "Hostname mismatch"):
+            self.handshake(self.client_context(self.ca_file), hostname="wrong.example.invalid", certificate=certificate)
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            self.handshake(ssl.create_default_context(), certificate=certificate)
 
     @unittest.skipUnless(EXPORTED_BUNDLE, "No app-exported PEM supplied")
     def test_app_export_is_readable_by_the_actual_python_tls_stack(self):

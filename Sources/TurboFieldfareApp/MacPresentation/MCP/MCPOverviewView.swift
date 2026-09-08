@@ -6,6 +6,7 @@ struct MCPOverviewView: View {
     @Bindable var manager: AppMCPManager
     let openConnection: (UUID) -> Void
     let addConnection: () -> Void
+    let removeConnection: (AppMCPProfile) -> Void
 
     var body: some View {
         ScrollView {
@@ -109,6 +110,11 @@ struct MCPOverviewView: View {
                     Text(profile.kind.title).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
+                Button(role: .destructive) { removeConnection(profile) } label: {
+                    Label("Remove…", systemImage: "trash")
+                }
+                .tint(.red)
+                .accessibilityLabel("Remove MCP integration \(profile.name)")
                 Button { openConnection(profile.id) } label: {
                     Label("Manage", systemImage: "arrow.right").labelStyle(.titleAndIcon)
                 }

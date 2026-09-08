@@ -74,13 +74,43 @@ public final class AppMCPManager {
     }
     public func remove(_ id: UUID) throws {
         guard readableStore else { throw AppMCPError.configuration("Saved connections are unavailable.") }
-        // Remove secrets first. A Keychain failure keeps the profile visible for retry.
-        let old = try secrets.read(id: id)
-        try secrets.remove(id: id)
+        guard profiles.contains(where: { $0.id == id }) else {
+            throw AppMCPError.configuration("The MCP integration is no longer available.")
+        }
         let updated = profiles.filter { $0.id != id }
-        do { try store.save(updated) } catch { try? secrets.write(old, id: id); throw error }
-        disconnect(id); profiles = updated; tools[id] = nil; lastChecked[id] = nil
-        diagnostics[id] = nil; pythonInfo[id] = nil
+        // Persist removal before touching the live session or credentials. If saving
+        // fails, the integration remains fully intact and can be retried safely.
+        try store.save(updated)
+
+        disconnect(id)
+        profiles = updated
+        tools[id] = nil
+        lastChecked[id] = nil
+        diagnostics[id] = nil
+        pythonInfo[id] = nil
+        statuses[id] = nil
+        generations[id] = nil
+        mailReads[id] = nil
+        mailProgress[id] = nil
+
+        var cleanupFailures: [String] = []
+        do { try secrets.remove(id: id) }
+        catch { cleanupFailures.append("Keychain credentials: \(error.localizedDescription)") }
+
+        let certificate = store.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("MCP/Certificates/\(id.uuidString).pem")
+        if FileManager.default.fileExists(atPath: certificate.path) {
+            do { try FileManager.default.removeItem(at: certificate) }
+            catch { cleanupFailures.append("generated certificate file: \(error.localizedDescription)") }
+        }
+
+        if !cleanupFailures.isEmpty {
+            throw AppMCPError.configuration(
+                "The MCP integration was removed and disconnected, but some local data could not be deleted:\n"
+                + cleanupFailures.joined(separator: "\n")
+                + "\nYou can remove a remaining TurboFieldfare.MCP credential in Keychain Access."
+            )
+        }
     }
     public func forgetCredentials(_ id: UUID) throws {
         try secrets.remove(id: id)
@@ -180,7 +210,7 @@ public final class AppMCPManager {
                     if let bundle = try AppMCPCertificates.prepare(profile: profile,
                         directory: store.fileURL.deletingLastPathComponent().appendingPathComponent("MCP/Certificates")) {
                         environment["REQUESTS_CA_BUNDLE"] = bundle.path
-                        report.complete("Selected CA certificates prepared for this connection. TLS and hostname verification remain enabled.\nSource: \(profile.selectedCertificates?.source ?? profile.certificateBundle)")
+                        report.complete("Selected certificates prepared for this connection. TLS and hostname verification remain enabled.\nSource: \(profile.selectedCertificates?.source ?? profile.certificateBundle)")
                     } else {
                         report.complete("Using Python's default CA certificates. For a corporate CA installed in macOS, choose Certificates → Choose from Keychain. TLS verification remains enabled.")
                     }

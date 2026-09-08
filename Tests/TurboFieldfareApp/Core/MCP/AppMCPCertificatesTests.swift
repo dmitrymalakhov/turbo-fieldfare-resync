@@ -4,21 +4,28 @@ import Testing
 @testable import TurboFieldfareAppCore
 
 struct AppMCPCertificatesTests {
-    @Test func certificateParsingPreservesIdentityAndRejectsExpiredFutureAndLeafCertificates() throws {
+    @Test func certificateParsingPreservesIdentityAndRejectsExpiredFutureAndOrdinaryLeafCertificates() throws {
         let root = try AppMCPCertificate(der: MCPCertificateFixtures.root)
         #expect(root.name == "Example Corporate CA root")
         #expect(root.issuer == root.name)
         #expect(root.isCertificateAuthority)
+        #expect(root.isSelfIssued && root.isSelfSigned)
         #expect(root.validityIssue == nil)
         #expect(root.fingerprint.split(separator: ":").count == 32)
         #expect(try AppMCPCertificates.decode(Data(root.pem.utf8)) == [root])
         let decoded = try AppMCPCertificates.decode(Data((root.pem + root.pem).utf8))
         #expect(decoded == [root, root])
-        for data in [MCPCertificateFixtures.expired, MCPCertificateFixtures.future, MCPCertificateFixtures.leaf] {
+        for data in [MCPCertificateFixtures.expired, MCPCertificateFixtures.future, MCPServerCertificateFixtures.server] {
             let certificate = try AppMCPCertificate(der: data)
             #expect(certificate.validityIssue != nil)
             #expect(throws: (any Error).self) { try AppMCPCertificates.validate([certificate]) }
         }
+        let selfSigned = try AppMCPCertificate(der: MCPCertificateFixtures.leaf)
+        #expect(selfSigned.isSelfSigned && !selfSigned.isCertificateAuthority)
+        #expect(selfSigned.validityIssue == nil)
+        let forged = try AppMCPCertificate(der: MCPServerCertificateFixtures.forgedSelfIssued)
+        #expect(forged.isSelfIssued && !forged.isSelfSigned)
+        #expect(forged.validityIssue != nil)
     }
 
     @Test func importRejectsPrivateKeysMalformedPEMAndOversizedFiles() throws {

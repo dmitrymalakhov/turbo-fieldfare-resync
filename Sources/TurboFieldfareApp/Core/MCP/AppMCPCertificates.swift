@@ -20,6 +20,8 @@ public struct AppMCPCertificate: Identifiable, Equatable, Sendable {
     public let notBefore: Date
     public let notAfter: Date
     public let isCertificateAuthority: Bool
+    public let isSelfIssued: Bool
+    public let isSelfSigned: Bool
     public let fingerprint: String
     public var id: String { fingerprint }
     public var validityIssue: String? { validityIssue(at: Date()) }
@@ -27,7 +29,7 @@ public struct AppMCPCertificate: Identifiable, Equatable, Sendable {
     func validityIssue(at date: Date) -> String? {
         if date < notBefore { return "This certificate is not valid yet." }
         if date > notAfter { return "This certificate has expired. Choose its replacement." }
-        if !isCertificateAuthority { return "Choose an issuing CA certificate, not a personal or server certificate." }
+        if !isCertificateAuthority && !isSelfSigned { return "This server or personal certificate needs its issuing CA. Choose a CA or a self-signed server certificate." }
         return nil
     }
 
@@ -42,6 +44,11 @@ public struct AppMCPCertificate: Identifiable, Equatable, Sendable {
             throw AppMCPError.configuration("The file does not contain a readable X.509 certificate. Choose a PEM, CER, CRT or DER certificate without a private key.")
         }
         self.der = SecCertificateCopyData(certificate) as Data
+        if let issuer = SecCertificateCopyNormalizedIssuerSequence(certificate),
+           let subject = SecCertificateCopyNormalizedSubjectSequence(certificate) {
+            isSelfIssued = issuer == subject
+        } else { isSelfIssued = false }
+        isSelfSigned = isSelfIssued && AppMCPCertificateSignature.isSelfSigned(certificate, der: self.der)
         name = SecCertificateCopySubjectSummary(certificate) as String? ?? "Unnamed certificate"
         let issuerValues = values[kSecOIDX509V1IssuerName as String]?[kSecPropertyKeyValue as String] as? [[String: Any]] ?? []
         issuer = issuerValues.first { $0[kSecPropertyKeyLabel as String] as? String == "2.5.4.3" }?[kSecPropertyKeyValue as String] as? String
@@ -60,6 +67,13 @@ public struct AppMCPCertificate: Identifiable, Equatable, Sendable {
     var pem: String {
         let encoded = der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
         return "-----BEGIN CERTIFICATE-----\n\(encoded)\n-----END CERTIFICATE-----\n"
+    }
+
+    public var kindDescription: String {
+        let type = isCertificateAuthority ? "CA certificate" : "Server / personal certificate"
+        if isSelfSigned { return "Self-signed · " + type }
+        if isSelfIssued { return "Self-issued · " + type }
+        return type
     }
 }
 
@@ -127,7 +141,7 @@ public enum AppMCPCertificates {
         let remainder = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
         guard !matches.isEmpty, matches.count <= 128,
               remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AppMCPError.configuration("Choose a PEM containing only CA certificates. Private keys, identities and other PEM blocks are not accepted.")
+            throw AppMCPError.configuration("Choose a PEM containing only certificates. Private keys, identities and other PEM blocks are not accepted.")
         }
         return try matches.map { match in
             let body = String(text[Range(match.range(at: 1), in: text)!]).filter { !$0.isWhitespace }
@@ -139,7 +153,7 @@ public enum AppMCPCertificates {
     public static func inspect(_ selection: AppMCPCertificateSelection) throws -> [AppMCPCertificate] {
         guard !selection.certificates.isEmpty, selection.certificates.count <= 128,
               selection.certificates.reduce(0, { $0 + $1.count }) <= maximumFileSize else {
-            throw AppMCPError.configuration("Choose between 1 and 128 CA certificates, at most 1 MB in total.")
+            throw AppMCPError.configuration("Choose between 1 and 128 certificates, at most 1 MB in total.")
         }
         return try selection.certificates.map { try AppMCPCertificate(der: $0) }
     }
