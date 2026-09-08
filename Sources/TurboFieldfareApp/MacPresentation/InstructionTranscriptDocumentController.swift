@@ -184,7 +184,7 @@ public final class InstructionTranscriptDocumentController {
         wasAtBottom: Bool,
         mutation: Mutation
     ) -> Bool {
-        wasAtBottom || mutation == .finalized
+        wasAtBottom
     }
 
     public static func shouldRunPrefillAnimation(
@@ -394,9 +394,13 @@ public final class InstructionTranscriptDocumentController {
                 string: "\n\n",
                 attributes: Self.promptAttributes()))
         }
-        document.append(NSAttributedString(
-            string: "Answer\n",
-            attributes: Self.assistantLabelAttributes()))
+        // Recovery can clear the live turn while leaving completed history.
+        if !prompt.isEmpty || promptPrefix.length > 0
+            || !response.isEmpty || showsPrefillPlaceholder {
+            document.append(NSAttributedString(
+                string: "Answer\n",
+                attributes: Self.assistantLabelAttributes()))
+        }
         assistantRange = NSRange(location: document.length, length: 0)
         let assistant = progressiveRendering
             ? progressiveRender(response, closingTail: closingTail)
@@ -1021,5 +1025,44 @@ public final class InstructionTranscriptDocumentController {
 extension Array {
     fileprivate subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+
+extension InstructionTranscriptDocumentController {
+    /// Execute history updates as one storage edit before the new live turn.
+    /// The view supplies cached image prefixes without moving image loading here.
+    @discardableResult
+    public func synchronizeHistory(
+        storage: NSMutableAttributedString,
+        planner: inout TranscriptSyncPlanner,
+        input: TranscriptSyncPlanner.Input,
+        drawPair: (Int) -> Void
+    ) -> [TranscriptSyncStep] {
+        let steps = planner.plan(input)
+        guard !steps.isEmpty else { return steps }
+        storage.beginEditing()
+        defer { storage.endEditing() }
+        for step in steps {
+            switch step {
+            case .reset:
+                resetTranscript(storage: storage)
+            case .sealDrawnTurn:
+                let before = frozenLength
+                sealTurn(storage: storage)
+                if frozenLength == before {
+                    planner.sealFoundNothingToFreeze(historyCount: input.historyCount)
+                }
+            case .drawPair(let index):
+                drawPair(index)
+                sealTurn(storage: storage)
+            case .appendContextBreak:
+                let before = frozenLength
+                appendContextBreak(storage: storage,
+                    text: "Earlier turns are no longer in the model's context")
+                if frozenLength != before { planner.markContextBreakDrawn() }
+            }
+        }
+        return steps
     }
 }

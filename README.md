@@ -177,6 +177,13 @@ right pane to configure sampling, context length, expert-cache slots, and
 runtime options. See [Runtime controls](docs/RUNTIME_CONTROLS.md) for details
 and defaults.
 
+#### Conversation history
+
+The app saves chats locally so you can browse and continue them from the
+sidebar. Only one conversation's model context (KV cache) stays in memory.
+Browsing other chats keeps that cache intact; continuing another chat replaces
+it. **New Chat** starts fresh.
+
 ### Command-line interface
 
 The CLI uses an existing `.gturbo` installation. If you installed the model
