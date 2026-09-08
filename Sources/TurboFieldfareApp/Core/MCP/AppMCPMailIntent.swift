@@ -18,7 +18,9 @@ public struct AppMCPMailIntent: Equatable, Sendable {
         guard mail || followup else { return nil }
         if matches(#"\b(?:как\s+(?:подключ\p{L}*|настро\p{L}*|работа\p{L}*)|что\s+(?:значит|означает|такое)|how\s+(?:to|does)|what\s+(?:does|is)|пример\p{L}*|переведи|translate)\b"#, text)
             || matches(#"\b(?:не\s+(?:читай|проверяй|загружай|обращайся)|(?:do not|don't)\s+(?:read|check|load))\b"#, text)
-            || matches(#"\b(?:напиши|составь|write|draft)\s+(?:(?:мне|a|an)\s+)?(?:письмо|ответ|черновик|email|reply)\b"#, text)
+            // Drafting instructions may include an infinitive, style, or "текст письма".
+            // Dates in the supplied draft must not turn it into a mailbox request.
+            || matches(#"\b(?:напиши|написать|составь|составить|отредактируй|отредактировать|перепиши|переписать|исправь|исправить|сформулируй|сформулировать|write|draft|rewrite|edit|rephrase|proofread)\s+(?:(?:мне|пожалуйста|официальн\p{L}*|делов\p{L}*|коротк\p{L}*|вежлив\p{L}*|формальн\p{L}*|a|an|the|my|this|formal|professional|polite|short)\s+)*(?:письмо|ответ|черновик|текст|email|e-mail|reply|message|text)\b"#, text)
             || matches(#"\b(?:приложенн\p{L}*|загруженн\p{L}*|attached|loaded|these)\b"#, text) { return nil }
         if matches(#"\b(?:удали|удалить|перемести|пометь|отметь|отправь|отправить|delete|remove|move|mark|send)\b"#, text) {
             throw AppMCPError.configuration("Exchange подключён только для чтения. Изменение и отправка писем недоступны.")

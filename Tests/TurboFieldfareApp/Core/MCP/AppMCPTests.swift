@@ -532,6 +532,19 @@ struct AppMCPTests {
         #expect(model.externalContextProgress == nil)
     }
 
+    @Test func draftingDoesNotRequireAMailAccount() async throws {
+        let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient()
+        let manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        let provider = AppMCPPromptContextProvider(manager: manager)
+        let result = try await provider.prepare(
+            prompt: "помоги написать официально текст письма:\nКоллеги, добрый день!\nС сегодняшнего дня прошу добавлять Антона для проверки соответствия архитектурным требованиям.",
+            recentUserPrompts: ["Разбери почту за сегодня"],
+            progress: { _ in Issue.record("Drafting must not start mailbox access") })
+        #expect(result == nil)
+        #expect(client.calls.isEmpty)
+    }
+
     @Test func promptRequiresAnUnambiguousEnabledAccount() async throws {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let client = MCPTestClient(); client.mailCount = 0

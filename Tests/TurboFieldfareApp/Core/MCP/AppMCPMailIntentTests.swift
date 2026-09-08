@@ -27,6 +27,21 @@ import Testing
         }
     }
 
+    @Test func draftingAndEditingDoNotInterpretDatesInTheText() throws {
+        for text in [
+            "помоги написать официально текст письма:\nКоллеги, добрый день!\nС сегодняшнего дня прошу добавлять в ПСИ Черешнева Антона для проверки соответствия архитектурным требованиям.",
+            "Помоги составить официальное письмо за сегодня",
+            "Отредактируй текст письма: сегодня и вчера мы обсуждали проект",
+            "Перепиши письмо: отправь документы завтра",
+            "Исправь текст письма за прошлую неделю",
+            "Help me write a formal email about today",
+            "Please edit my email: send the report tomorrow",
+            "Rewrite this email about last week"
+        ] {
+            #expect(try AppMCPMailIntent.resolve(text) == nil, "\(text)")
+        }
+    }
+
     @Test func unsupportedDatesAndWriteRequestsFailBeforeConnection() {
         for text in ["Почта за прошлую неделю", "Почта за месяц", "Покажи почту за последние 7 дней",
                      "Письма с 01.09 по 04.09", "Почта сегодня и вчера", "Удали письма за сегодня",
