@@ -12,6 +12,7 @@ public struct AppMCPMailSnapshot: Sendable {
 @MainActor
 @Observable
 public final class AppMCPManager {
+    public let mailReview = AppMCPMailReviewCoordinator()
     public private(set) var profiles: [AppMCPProfile] = []
     public private(set) var statuses: [UUID: AppMCPStatus] = [:]
     public private(set) var tools: [UUID: [AppMCPTool]] = [:]
@@ -46,6 +47,18 @@ public final class AppMCPManager {
     }
     public func status(_ id: UUID) -> AppMCPStatus { statuses[id] ?? .disconnected }
     public func credentials(_ id: UUID) throws -> AppMCPCredentials { try secrets.read(id: id) }
+
+    public func saveMailContacts(_ contacts: AppMCPMailContacts, for id: UUID) throws {
+        guard readableStore, let index = profiles.firstIndex(where: { $0.id == id && $0.kind == .exchange }) else {
+            throw AppMCPError.configuration("Почтовое подключение недоступно.")
+        }
+        guard Set(contacts.contacts.map(\.email)).count == contacts.contacts.count,
+              Set(contacts.groups.map(\.id)).count == contacts.groups.count else {
+            throw AppMCPError.configuration("Контакты и группы должны быть уникальны.")
+        }
+        var updated = profiles; updated[index].mailContacts = contacts
+        try store.save(updated); profiles = updated
+    }
 
     public func setCertificates(_ selection: AppMCPCertificateSelection?, for id: UUID) throws {
         guard readableStore, let index = profiles.firstIndex(where: { $0.id == id && $0.kind.isMail }) else {
@@ -304,6 +317,7 @@ public final class AppMCPManager {
     }
 
     public func disconnect(_ id: UUID) {
+        if let pending = mailReview.pending, pending.preview.profileID == id { mailReview.cancel(pending.id) }
         diagnostics[id]?.cancel()
         generations[id] = UUID()
         operations.removeValue(forKey: id)?.cancel()

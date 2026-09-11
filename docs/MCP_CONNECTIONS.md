@@ -210,8 +210,12 @@ After saving and installing the Exchange connection, send an ordinary chat
 message such as **«Разбери почту за сегодня»**, **«Что важного в письмах за
 неделю?»**, **«Покажи письма за вчера»**, or **“Summarize my email this week”**.
 The app resolves the requested period, connects and verifies the saved account if
-needed, reads the mail and adds it to the model's reference context before
-generating the answer. Progress and cancellation are available in the composer.
+needed, and loads headers without bodies. A **Какие письма анализировать?**
+sheet shows senders and counts, saved groups, a subject filter and individual
+message checkboxes. Only after confirmation does the app fetch bodies for the
+selected IDs and add them to the model's reference context. Progress and
+cancellation are available in the composer; cancelling the selection restores
+the request without fetching bodies or starting inference.
 If no Exchange integration is configured, the MCP mail router stays inactive:
 messages containing words such as **«почта»**, **«письмо»** or **“email”** go
 straight to the local model and cannot block an ordinary chat.
@@ -220,6 +224,29 @@ Before inference, the app checks whether the new reference text fits with the
 current prompt. If necessary it reduces the included text, marks it as truncated
 for the model and visibly reports that part of the loaded text did not fit.
 The loaded-message count is not a claim that every loaded body was analyzed.
+
+**Контакты и группы…** is available both in the selection sheet and the Exchange
+connection. Sender names and addresses are remembered locally in that profile's
+`mailContacts` field; subjects and bodies are not saved in this contact library.
+Add or rename contacts by entering their email and preferred name. Select contacts
+to create or update named groups. Mark mailing-list senders **Исключать** to leave
+them unselected in suggestions and **Все, кроме исключённых**. They can still be
+explicitly checked for a particular analysis. Groups can replace the sender
+selection or be added to it. All library edits take effect when saved and remain
+scoped to that mailbox.
+
+Examples: **«Письма от Иванова за сегодня»**, **«Что важного от группы «Проект
+Альфа» в почте за неделю?»**, **«Письма за сегодня, тема «релиз»»**. Local matching
+prefills known email addresses, contact names, unique surnames (including common
+Russian surname endings), exact group names and quoted subject filters. This is
+a deterministic suggestion, not an LLM query planner: unsupported wording must be
+adjusted in the sheet. All suggestions require review. No sender is selected by
+default when the request has no recognized contact or group; use the all-senders
+button or choose contacts. Period and folder routing follow the rules below.
+
+Filtering applies to newly retrieved reference material. Earlier messages already
+in the same conversation remain part of its history. The model is instructed to
+limit conclusions to the current selection and to disclose incomplete coverage.
 
 An explicit mail-reading request without a period defaults to today. **«А за
 неделю?»** can follow a mail request in the same chat. With multiple accounts,
@@ -243,12 +270,16 @@ been read. Cancelling retrieval also preserves the request. Mail remains read-on
 ## Read mail manually and add it to a chat
 
 Select **Today**, **Yesterday**, or **This Week**, select a folder, then choose
-**Load Mail**. The default folder is Inbox, excluding subfolders. Today means
+**Выбрать письма…**. Choose senders/groups, optionally filter subjects and uncheck
+individual messages, then confirm. The default folder is Inbox, excluding subfolders. Today means
 midnight to the first request; yesterday is the previous calendar day; this
 week means Monday midnight to the first request, in the configured time zone.
 Selecting Sent/Sent Items uses the sent timestamp.
 
-The app follows result pages and full-message body continuations. It displays
+The app follows header pages (100 headers per request, up to 10,000 per preview)
+and reports when a preview is incomplete. Body requests use only confirmed IDs;
+unselected messages are not passed to the model. It follows selected-message
+body continuations. It displays
 progress and supports cancellation. Dates are filtered on Exchange before
 paging; the original last-100-messages search limitation is removed. A local
 import budget of 300,000 characters or 1,000 messages produces an explicit

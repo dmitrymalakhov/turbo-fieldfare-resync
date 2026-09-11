@@ -46,6 +46,28 @@ private final class MCPPreviewClient: AppMCPClient {
 @Suite(.serialized)
 @MainActor
 struct MCPConnectionsPresentationTests {
+    @Test func mailSelectionAndGroupsRenderWithSyntheticHeaders() throws {
+        _ = NSApplication.shared
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mail-selection-preview-\(UUID())")
+        let manager = AppMCPManager(store: .init(fileURL: directory.appendingPathComponent("profiles.json")), secrets: MCPUIPreviewSecrets())
+        let id = UUID()
+        let headers: [AppMCPMailHeader] = [
+            .init(id: "a", sender: "ivanov@example.com", senderName: "Иванов Иван", subject: "Релиз: согласование плана", date: "2026-09-11 14:20"),
+            .init(id: "b", sender: "petrova@example.com", senderName: "Петрова Анна", subject: "Вопросы по проекту", date: "2026-09-11 12:00"),
+            .init(id: "c", sender: "news@example.com", senderName: "Уведомления системы", subject: "Обновлена страница", date: "2026-09-11 13:00")]
+        var contacts = AppMCPMailContacts(); contacts.remember(headers)
+        contacts.groups = [.init(name: "Проект Альфа", emails: ["ivanov@example.com", "petrova@example.com"])]
+        contacts.excludedEmails = ["news@example.com"]
+        let preview = AppMCPMailPreview(profileID: id, period: "today", folder: "Inbox", bounds: "11 сентября 2026 · Europe/Moscow", headers: headers, complete: true)
+        let request = AppMCPMailReviewRequest(profileName: "Рабочая почта", prompt: "Есть важные письма от группы «Проект Альфа» за сегодня?", preview: preview, contacts: contacts)
+        let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
+        try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
+        try renderView(MCPMailSelectionView(manager: manager, request: request, confirm: { _ in }, cancel: {}).preferredColorScheme(.light),
+            size: NSSize(width: 1020, height: 730), to: screenshots.appendingPathComponent("mail-selection.png"))
+        try renderView(MCPMailContactsView(manager: manager, profileID: id, contacts: contacts).preferredColorScheme(.light),
+            size: NSSize(width: 940, height: 620), to: screenshots.appendingPathComponent("mail-contacts.png"))
+    }
+
     @Test func smtpSettingsAndComposerRenderWithoutNetwork() throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("smtp-preview-\(UUID())")

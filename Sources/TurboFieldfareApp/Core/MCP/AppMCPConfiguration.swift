@@ -28,6 +28,7 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
     public var effectiveSMTPSecurity: String { smtpSecurity ?? "STARTTLS" }
     /// Public certificates selected for this connection; no private keys or identities.
     public var selectedCertificates: AppMCPCertificateSelection?
+    public var mailContacts: AppMCPMailContacts?
     public var environmentKeys: [String] = []
     public var enabledTools: Set<String> = []
     public init(kind: AppMCPKind = .exchange) {

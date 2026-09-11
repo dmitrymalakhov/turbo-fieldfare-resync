@@ -4,7 +4,12 @@ import Foundation
 @MainActor
 public final class AppMCPPromptContextProvider: AppPromptContextProviding {
     private let manager: AppMCPManager
-    public init(manager: AppMCPManager) { self.manager = manager }
+    private let review: @MainActor (AppMCPMailReviewRequest) async throws -> AppMCPMailSelection
+    public init(manager: AppMCPManager,
+                review: (@MainActor (AppMCPMailReviewRequest) async throws -> AppMCPMailSelection)? = nil) {
+        self.manager = manager
+        self.review = review ?? { try await manager.mailReview.request($0) }
+    }
 
     public func prepare(prompt: String, recentUserPrompts: [String],
                         progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
@@ -33,9 +38,16 @@ public final class AppMCPPromptContextProvider: AppPromptContextProviding {
         try Task.checkCancellation()
         progress("Подключение к \(profile.name)…")
         try await manager.ensureConnected(profile.id)
-        progress("Читаю почту: \(intent.periodLabel)…")
-        let snapshot = try await manager.readMail(profile.id, period: intent.period, folder: intent.folder) { count in
-            progress("Читаю почту: \(intent.periodLabel) · \(count) писем")
+        progress("Собираю отправителей: \(intent.periodLabel)…")
+        let preview = try await manager.previewMail(profile.id, period: intent.period, folder: intent.folder) { count in
+            progress("Собираю заголовки: \(intent.periodLabel) · \(count) писем")
+        }
+        let contacts = manager.profiles.first(where: { $0.id == profile.id })?.mailContacts ?? .init()
+        progress("Выбери письма для анализа…")
+        let selection = try await review(.init(profileName: profile.name, prompt: prompt, preview: preview, contacts: contacts))
+        try Task.checkCancellation()
+        let snapshot = try await manager.readSelectedMail(preview, selection: selection) { count in
+            progress("Читаю выбранные письма: \(count) из \(selection.messageIDs.count)")
         }
         try Task.checkCancellation()
         let summary = "Почта: \(profile.name) · \(intent.periodLabel) · \(intent.folder) · \(snapshot.count) писем"

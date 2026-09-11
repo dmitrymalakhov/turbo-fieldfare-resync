@@ -4,6 +4,11 @@ import Testing
 @testable import TurboFieldfareAppCore
 
 @MainActor
+private func reviewAllMailForTest(_ request: AppMCPMailReviewRequest) async throws -> AppMCPMailSelection {
+    .init(messageIDs: Set(request.preview.headers.map(\.id)), senders: Set(request.preview.headers.map(\.sender)))
+}
+
+@MainActor
 private final class MCPTestSecrets: AppMCPSecretStoring {
     var values: [UUID: AppMCPCredentials] = [:]
     var removeError: Error?
@@ -44,6 +49,12 @@ private final class MCPTestClient: AppMCPClient {
                             "content": .array([.object(["type": .string("text"), "text": .string(authenticationError)])])])
         }
         if let toolReply { return toolReply }
+        if name == "get_message" {
+            let id = params["arguments"]?["message_id"]?.stringValue ?? ""
+            let index = id.replacingOccurrences(of: "mail-", with: "")
+            return .object(["structuredContent": .object([
+                "id": .string(id), "body": .string("Body \(index)"), "body_next_offset": .null])])
+        }
         if name == "list_messages" {
             if let mailDelay { try await Task.sleep(for: mailDelay) }
             let offset = params["arguments"]?["offset"]?.intValue ?? 0
@@ -52,9 +63,11 @@ private final class MCPTestClient: AppMCPClient {
                 "start_inclusive": .string("2026-08-31T00:00:00+03:00"),
                 "end_exclusive": .string("2026-09-04T13:00:00+03:00"),
                 "messages": .array((offset..<end).map { i in .object([
-                    "id": .string("mail-\(i)"), "subject": .string("Subject \(i)"), "body": .string("Body \(i)"),
+                    "id": .string("mail-\(i)"), "subject": .string("Subject \(i)"),
+                    "from": .object(["email": .string(i % 2 == 0 ? "person@example.com" : "news@example.com"), "name": .string(i % 2 == 0 ? "Иванов Иван" : "Рассылка")]),
+                    "body": params["arguments"]?["include_body"]?.boolValue == true ? .string("Body \(i)") : .null,
                     "body_next_offset": .null]) }),
-                "next_page": end < mailCount ? .object(["offset": .number(Double(end))]) : .null])])
+                "next_page": end < mailCount ? .object(["offset": .number(Double(end)), "include_body": params["arguments"]?["include_body"] ?? .bool(false)]) : .null])])
         }
         return .object(["structuredContent": .object([:])])
     }
@@ -84,6 +97,100 @@ private final class MCPLargeContextProvider: AppPromptContextProviding {
 @Suite(.serialized)
 @MainActor
 struct AppMCPTests {
+    @Test func cancellingTaskClosesPendingMailReview() async throws {
+        let coordinator = AppMCPMailReviewCoordinator()
+        let preview = AppMCPMailPreview(profileID: UUID(), period: "today", folder: "Inbox", bounds: "test", headers: [], complete: true)
+        let request = AppMCPMailReviewRequest(profileName: "test", prompt: "test", preview: preview, contacts: .init())
+        let task = Task { try await coordinator.request(request) }
+        for _ in 0..<100 where coordinator.pending == nil { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(coordinator.pending?.id == request.id)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(coordinator.pending == nil)
+    }
+
+    @Test func mailPreviewNeverReadsBodiesAndSelectionFetchesOnlyChosenIDs() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(); client.mailCount = 23
+        let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
+        try await manager.ensureConnected(value.id)
+        let preview = try await manager.previewMail(value.id, period: "today", folder: "Inbox")
+        #expect(preview.headers.count == 23)
+        #expect(preview.complete)
+        #expect(!client.calls.contains { $0.1["name"]?.stringValue == "get_message" })
+        for call in client.calls where call.1["name"]?.stringValue == "list_messages" {
+            #expect(call.1["arguments"]?["include_body"]?.boolValue == false)
+            #expect(call.1["arguments"]?["search"] == nil)
+        }
+        let snapshot = try await manager.readSelectedMail(preview,
+            selection: .init(messageIDs: ["mail-0"], senders: ["person@example.com"]))
+        #expect(snapshot.count == 1)
+        #expect(snapshot.text.contains("Body 0"))
+        #expect(!snapshot.text.contains("Body 1"))
+        #expect(client.calls.filter { $0.1["name"]?.stringValue == "get_message" }.map { $0.1["arguments"]?["message_id"]?.stringValue } == ["mail-0"])
+        await #expect(throws: AppMCPError.self) {
+            try await manager.readSelectedMail(preview, selection: .init(messageIDs: ["mail-1"], senders: ["person@example.com"]))
+        }
+        var library = try #require(manager.profiles.first?.mailContacts)
+        #expect(library.contacts.count == 2)
+        library.groups = [.init(name: "Проект", emails: ["person@example.com"])]
+        library.excludedEmails = ["news@example.com"]
+        try manager.saveMailContacts(library, for: value.id)
+        #expect(try store.load().first?.mailContacts == library)
+        #expect(manager.status(value.id) == .connected)
+    }
+
+    @Test func chatWaitsForReviewBeforeFetchingBodiesAndCancellationRestoresPrompt() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(); client.mailCount = 2
+        let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        model.promptText = "Разбери почту за сегодня"
+        model.submitPrompt()
+        for _ in 0..<200 where manager.mailReview.pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let pending = try #require(manager.mailReview.pending)
+        #expect(model.outputText.isEmpty)
+        #expect(!client.calls.contains { $0.1["name"]?.stringValue == "get_message" })
+        manager.mailReview.cancel(pending.id)
+        try await waitForPrompt(model)
+        #expect(model.promptText == "Разбери почту за сегодня")
+        #expect(model.selectedChat.messages.isEmpty)
+        #expect(!client.calls.contains { $0.1["name"]?.stringValue == "get_message" })
+        model.submitPrompt()
+        for _ in 0..<200 where manager.mailReview.pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let next = try #require(manager.mailReview.pending)
+        manager.mailReview.confirm(pending.id, selection: .init(messageIDs: ["mail-1"], senders: ["news@example.com"]))
+        #expect(manager.mailReview.pending?.id == next.id)
+        manager.mailReview.confirm(next.id, selection: .init(messageIDs: ["mail-0"], senders: ["person@example.com"]))
+        try await waitForPrompt(model)
+        #expect(model.error == nil)
+        let user = try #require(model.selectedChat.messages.first { $0.role == .user })
+        #expect(user.contextContent.contains("Body 0"))
+        #expect(!user.contextContent.contains("Body 1"))
+    }
+
+    @Test func contactSuggestionsAndSubjectFiltersRespectGroupsAndExclusions() throws {
+        var contacts = AppMCPMailContacts()
+        contacts.contacts = [.init(email: "Person@Example.com", name: "Иванов Иван"), .init(email: "news@example.com", name: "Новости")]
+        contacts.groups = [.init(name: "Проект Альфа", emails: ["person@example.com", "news@example.com"])]
+        contacts.excludedEmails = ["news@example.com"]
+        #expect(contacts.suggest(prompt: "Важные письма от группы «Проект Альфа» за неделю") == ["person@example.com"])
+        #expect(contacts.suggest(prompt: "Письма от Иванов за сегодня") == ["person@example.com"])
+        #expect(contacts.suggest(prompt: "Письма от Иванова за сегодня") == ["person@example.com"])
+        #expect(contacts.suggest(prompt: "Письма от person@example.com") == ["person@example.com"])
+        #expect(contacts.suggest(prompt: "Почта за сегодня").isEmpty)
+        #expect(contacts.suggest(prompt: "Письма от otherperson@example.com").isEmpty)
+        let preview = AppMCPMailPreview(profileID: UUID(), period: "today", folder: "Inbox", bounds: "test", headers: [
+            .init(id: "a", sender: "person@example.com", senderName: "Иванов", subject: "РЕЛИЗ", date: "today"),
+            .init(id: "b", sender: "news@example.com", senderName: "Новости", subject: "Релиз", date: "today")], complete: true)
+        #expect(preview.matching(senders: ["person@example.com"], subject: "релиз").map(\.id) == ["a"])
+        #expect(preview.matching(senders: ["person@example.com"], subject: "релиз", excludedIDs: ["a"]).isEmpty)
+    }
+
     @Test func smtpProfileRoundTripsAndRejectsUnsafeTransport() throws {
         var value = AppMCPProfile(kind: .smtp)
         value.server = "smtp.example.invalid"; value.email = "sender@example.invalid"; value.username = "sender"
@@ -185,7 +292,7 @@ struct AppMCPTests {
         #expect(manager.diagnostics[value.id] == nil)
         #expect(manager.pythonInfo[value.id] == nil)
         #expect(manager.lastChecked[value.id] == nil)
-        let provider = AppMCPPromptContextProvider(manager: manager)
+        let provider = AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest)
         let callsAfterRemoval = client.calls.count
         let context = try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
         #expect(context == nil)
@@ -206,7 +313,7 @@ struct AppMCPTests {
         #expect(try store.load().isEmpty)
         #expect(client.stopCount > 0)
         #expect(secrets.values[value.id]?.password == "test-password")
-        let provider = AppMCPPromptContextProvider(manager: manager)
+        let provider = AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest)
         let callsAfterRemoval = client.calls.count
         let context = try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in })
         #expect(context == nil)
@@ -494,7 +601,7 @@ struct AppMCPTests {
         let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
         try manager.save(value, credentials: .init(password: "never-pass-password-to-model"))
         defer { manager.stopAll() }
-        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest))
         let privateInstruction = "LOCAL_PRIVATE_INSTRUCTION_7B3F"
         model.promptText = "Разбери почту за сегодня. \(privateInstruction)"
         model.submitPrompt()
@@ -538,7 +645,7 @@ struct AppMCPTests {
         let client = MCPTestClient(); client.authenticationFails = true; client.mailCount = 1
         let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
         try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
-        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest))
         let prompt = "Покажи письма за вчера"
         model.promptText = prompt; model.submitPrompt(); try await waitForPrompt(model)
         #expect(model.error != nil)
@@ -557,7 +664,7 @@ struct AppMCPTests {
         let client = MCPTestClient(); client.mailDelay = .seconds(30)
         let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
         try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
-        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest))
         model.promptText = "Почта за неделю"; model.submitPrompt()
         for _ in 0..<100 {
             if client.calls.contains(where: { $0.1["name"]?.stringValue == "list_messages" }) { break }
@@ -576,7 +683,7 @@ struct AppMCPTests {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let client = MCPTestClient()
         let manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
-        let provider = AppMCPPromptContextProvider(manager: manager)
+        let provider = AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest)
         let result = try await provider.prepare(
             prompt: "помоги написать официально текст письма:\nКоллеги, добрый день!\nС сегодняшнего дня прошу добавлять Антона для проверки соответствия архитектурным требованиям.",
             recentUserPrompts: ["Разбери почту за сегодня"],
@@ -591,7 +698,7 @@ struct AppMCPTests {
         var local = AppMCPProfile(kind: .stdio)
         local.name = "Local tools"; local.executable = "/test/local-mcp"
         try manager.save(local, credentials: .init())
-        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager))
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest))
         model.promptText = "Почта за сегодня"
 
         model.submitPrompt(); try await waitForPrompt(model)
@@ -607,7 +714,7 @@ struct AppMCPTests {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let client = MCPTestClient(); client.mailCount = 0
         let manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
-        let provider = AppMCPPromptContextProvider(manager: manager)
+        let provider = AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest)
         #expect(try await provider.prepare(prompt: "Почта за сегодня", recentUserPrompts: [], progress: { _ in }) == nil)
         var work = profile(); work.name = "Рабочий ящик"
         var other = profile(); other.name = "Другой ящик"

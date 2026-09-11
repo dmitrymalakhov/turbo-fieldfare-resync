@@ -107,6 +107,14 @@ struct TurboFieldfareMacApp: App {
     var body: some Scene {
         Window("TurboFieldfare", id: "main") {
             RootView(model: model)
+                .sheet(item: Binding(get: { mcpManager.mailReview.pending }, set: { value in
+                    if value == nil, let pending = mcpManager.mailReview.pending { mcpManager.mailReview.cancel(pending.id) }
+                })) { request in
+                    MCPMailSelectionView(manager: mcpManager, request: request,
+                        confirm: { mcpManager.mailReview.confirm(request.id, selection: $0) },
+                        cancel: { mcpManager.mailReview.cancel(request.id) })
+                        .onDisappear { mcpManager.mailReview.cancel(request.id) }
+                }
                 // The three columns at their minimums, plus their dividers.
                 .frame(minWidth: 1112, minHeight: 560)
                 // Once, when the window first appears: the setting is read

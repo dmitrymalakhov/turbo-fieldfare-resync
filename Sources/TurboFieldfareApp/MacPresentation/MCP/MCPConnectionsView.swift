@@ -18,6 +18,8 @@ public struct MCPConnectionsView: View {
     @State private var reading: Task<Void, Never>?
     @State private var readGeneration = UUID()
     @State private var readError: String?
+    @State private var choosingMail: AppMCPMailReviewRequest?
+    @State private var editingMailContacts: AppMCPProfile?
 
     public init(manager: AppMCPManager, initialSelection: UUID? = nil,
                 useMail: @escaping @MainActor (AppMCPMailSnapshot) -> Void = { _ in }) {
@@ -39,6 +41,24 @@ public struct MCPConnectionsView: View {
         .onDisappear { stopReading() }
         .sheet(item: $editing) { profile in
             MCPProfileEditor(profile: profile, manager: manager, saved: { selection = $0 })
+        }
+        .sheet(item: $choosingMail) { request in
+            MCPMailSelectionView(manager: manager, request: request, confirm: { ids in
+                choosingMail = nil
+                let generation = UUID(); readGeneration = generation
+                reading = Task { @MainActor in
+                    do {
+                        let result = try await manager.readSelectedMail(request.preview, selection: ids)
+                        try Task.checkCancellation()
+                        if selection == request.preview.profileID && readGeneration == generation { snapshot = result }
+                    } catch is CancellationError { }
+                    catch { if readGeneration == generation { readError = error.localizedDescription } }
+                    if readGeneration == generation { reading = nil }
+                }
+            }, cancel: { choosingMail = nil })
+        }
+        .sheet(item: $editingMailContacts) { profile in
+            MCPMailContactsView(manager: manager, profileID: profile.id, contacts: profile.mailContacts ?? .init())
         }
         .sheet(item: $editingCertificates) { profile in
             MCPCertificateEditor(profile: profile, manager: manager)
@@ -281,6 +301,7 @@ public struct MCPConnectionsView: View {
             sectionTitle("Mail for your conversation", symbol: "tray.full")
             Text("You can also request mail for today, yesterday or this week directly in chat.")
                 .font(.caption).foregroundStyle(.secondary)
+            Button("Контакты и группы…") { editingMailContacts = manager.profiles.first { $0.id == profile.id } }
             Picker("Period", selection: $period) {
                 Text("Today").tag("today"); Text("Yesterday").tag("yesterday"); Text("This Week").tag("this_week")
             }.pickerStyle(.segmented)
@@ -289,24 +310,27 @@ public struct MCPConnectionsView: View {
                     "Calendar day in \(profile.timezone)").font(.caption).foregroundStyle(.secondary)
             LabeledContent("Folder") { TextField("Inbox", text: $folder).textFieldStyle(.roundedBorder).frame(maxWidth: 220) }
                 .disabled(reading != nil)
-            Text("One folder, excluding subfolders. All result pages are read automatically.")
+            Text("Сначала заголовки и отправители. Тексты писем загружаются после выбора.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 if reading != nil {
                     ProgressView().controlSize(.small)
-                    Text("Read \(manager.mailProgress[profile.id] ?? 0) messages…").font(.callout)
+                    Text("Загрузка выбранной почты…").font(.callout)
                     Spacer()
                     Button("Cancel") { stopReading() }
                 } else {
-                    Button("Load Mail") {
+                    Button("Выбрать письма…") {
                         snapshot = nil; readError = nil
                         let id = profile.id, chosenPeriod = period, chosenFolder = folder
                         let generation = UUID(); readGeneration = generation
                         reading = Task { @MainActor in
                             do {
-                                let result = try await manager.readMail(id, period: chosenPeriod, folder: chosenFolder)
+                                let preview = try await manager.previewMail(id, period: chosenPeriod, folder: chosenFolder)
                                 try Task.checkCancellation()
-                                if selection == id && readGeneration == generation { snapshot = result }
+                                if selection == id && readGeneration == generation {
+                                    choosingMail = .init(profileName: profile.name, prompt: "", preview: preview,
+                                        contacts: manager.profiles.first(where: { $0.id == id })?.mailContacts ?? .init())
+                                }
                             } catch is CancellationError { }
                             catch { if selection == id && readGeneration == generation { readError = error.localizedDescription } }
                             if selection == id && readGeneration == generation { reading = nil }
