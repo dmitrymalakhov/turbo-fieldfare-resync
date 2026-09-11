@@ -29,13 +29,19 @@ public struct ServerArguments: Equatable, Sendable {
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
                                  Prompt KV reuse mode (default single-prefix).
-      --expert-cache-slots <n>   Expert-cache slots: \(allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default 16).
+      --expert-cache-slots <n>   Expert-cache slots: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default 16).
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.
-      --prefill-chunk-tokens <n> Prefill chunk size: \(allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens))
+      --prefill-chunk-tokens <n|auto>
+                                 Prefill chunk size: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens, alsoAccepting: ["auto"]))
                                  (default 128). Each chunk re-reads the routed
-                                 expert pool, so larger chunks read less.
+                                 expert pool, so larger chunks read less; auto
+                                 runs at the cap, 256, which prefills every
+                                 prompt in the same spans a per-request size
+                                 would. Prefill scratch is sized from the chunk,
+                                 so the cap holds about 32.5 MB of it against
+                                 16.4 MB at 128.
       --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive
                                  (default off).
       --help                     Show this help.
@@ -56,7 +62,8 @@ public struct ServerArguments: Equatable, Sendable {
         guard RuntimeConfiguration.allowedPrefillChunkTokens.contains(prefillChunkTokens) else {
             throw ServerArgumentError.notAllowed(
                 flag: "--prefill-chunk-tokens",
-                allowed: RuntimeConfiguration.allowedPrefillChunkTokens)
+                allowed: RuntimeConfiguration.allowedPrefillChunkTokens,
+                alsoAccepting: ["auto"])
         }
         guard prefillPolicy == .off
                 || expertCacheSlots >= RuntimeConfiguration.minimumExpertCacheSlotsForChunkedPrefill
@@ -154,11 +161,25 @@ public struct ServerArguments: Equatable, Sendable {
                 default: throw ServerArgumentError.invalid("--prefill must be on or off")
                 }
             case "--prefill-chunk-tokens":
+                // `auto` is an alias for the cap here, and nothing downstream
+                // learns it was spelled that way. A per-request size is the
+                // smallest allowed size that covers the span, so the cap
+                // prefills every prompt in exactly the spans that size would,
+                // and the KV ring is sized from the cap either way. The prefill
+                // scratch is the one thing a per-request size changes: it is
+                // allocated from the chunk, about 125.5 KB per token over a
+                // fixed 328 KB, and the
+                // server would reallocate it on every size change.
+                if value == "auto" {
+                    prefillChunkTokens = PrefillRuntimeConfig.maxChunkTokens
+                    break
+                }
                 guard let parsed = Int(value),
                       RuntimeConfiguration.allowedPrefillChunkTokens.contains(parsed) else {
                     throw ServerArgumentError.notAllowed(
                         flag: flag,
-                        allowed: RuntimeConfiguration.allowedPrefillChunkTokens)
+                        allowed: RuntimeConfiguration.allowedPrefillChunkTokens,
+                        alsoAccepting: ["auto"])
                 }
                 prefillChunkTokens = parsed
             case "--rdadvise":
@@ -188,23 +209,6 @@ public struct ServerArguments: Equatable, Sendable {
     }
 }
 
-extension ServerArguments {
-    /// The one rendering shared by the help text and every rejection, so neither
-    /// can name a value the guard does not accept: the hardcoded
-    /// "32, 64, or 128" outlived the widening of the allowed set and told users
-    /// 256 was illegal while the guard accepted it.
-    static func allowedValueList(_ values: [Int]) -> String {
-        let words = values.map(String.init)
-        switch words.count {
-        case 0: return ""
-        case 1: return words[0]
-        case 2: return "\(words[0]) or \(words[1])"
-        default:
-            return words.dropLast().joined(separator: ", ") + ", or " + words[words.count - 1]
-        }
-    }
-}
-
 public enum ServerArgumentError: Error, Equatable, CustomStringConvertible {
     case help
     case invalid(String)
@@ -218,7 +222,10 @@ public enum ServerArgumentError: Error, Equatable, CustomStringConvertible {
 }
 
 extension ServerArgumentError {
-    static func notAllowed(flag: String, allowed: [Int]) -> ServerArgumentError {
-        .invalid("\(flag) must be \(ServerArguments.allowedValueList(allowed))")
+    static func notAllowed(flag: String,
+                           allowed: [Int],
+                           alsoAccepting aliases: [String] = []) -> ServerArgumentError {
+        .invalid("\(flag) must be "
+            + RuntimeConfiguration.allowedValueList(allowed, alsoAccepting: aliases))
     }
 }

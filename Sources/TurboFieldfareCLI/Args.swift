@@ -108,6 +108,16 @@ public enum ArgsError: Error, Equatable, CustomStringConvertible {
 }
 
 extension Args {
+    /// Whether `--prefill-chunk-tokens auto` has a size to resolve at all.
+    ///
+    /// Under `--prefill off` the config is `.off` and the size is inert, and an
+    /// image turn there is coerced to the runtime's own chunked default rather
+    /// than to a resolved size, so resolving one would only announce a number
+    /// nothing goes on to use.
+    public var resolvesPrefillChunkAuto: Bool {
+        prefillChunkTokensAuto && prefillPolicy != .off
+    }
+
     public static let usage = """
     TurboFieldfareCLI — Gemma 4 26B-A4B text generation
 
@@ -138,12 +148,12 @@ extension Args {
       --quiet                    Suppress the timing footer.
       --progress                 Report tokenizer, model-load, and prefill progress to stderr.
       --metrics-json             Emit the final timing footer as JSON on stderr.
-      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 16).
+      --expert-cache-slots <n>   Expert-cache slots: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedExpertCacheSlots)) (default 16).
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.
       --prefill-chunk-tokens <n|auto>
-                                 Prefill chunk size: 32, 64, 128, 256, or auto
+                                 Prefill chunk size: \(RuntimeConfiguration.allowedValueList(RuntimeConfiguration.allowedPrefillChunkTokens, alsoAccepting: ["auto"]))
                                  (default 128). Each chunk re-reads the routed
                                  expert pool, so larger chunks read less; auto
                                  picks the smallest size that covers the prompt.
@@ -338,6 +348,9 @@ extension Args {
                       RuntimeConfiguration.allowedPrefillChunkTokens.contains(parsed) else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
+                // A repeated flag is last-one-wins in both directions: without
+                // this clear, an explicit size after `auto` parses and is then
+                // overridden at run time by the resolved size.
                 prefillChunkTokensAuto = false
                 prefillChunkTokens = parsed
             case "--rdadvise":

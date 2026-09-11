@@ -27,6 +27,50 @@ import TurboFieldfare
         #expect(runtime == RuntimeConfiguration.production)
     }
 
+    /// `auto` only resolves a size where a chunked prefill will run at it.
+    /// Under `--prefill off` the config is `.off` and the size is inert, and an
+    /// image turn there is coerced to the runtime's own chunked default, so the
+    /// resolved number would be announced on stderr and then used by nothing.
+    @Test(arguments: [
+        (prefill: "on", auto: true, resolves: true),
+        (prefill: "off", auto: true, resolves: false),
+        (prefill: "on", auto: false, resolves: false),
+        (prefill: "off", auto: false, resolves: false),
+    ])
+    func autoResolvesOnlyWhenChunkedPrefillWillRun(
+        testCase: (prefill: String, auto: Bool, resolves: Bool)
+    ) throws {
+        let arguments = try Args.parse([
+            "--model", "m.gturbo", "--prompt", "hi",
+            "--prefill", testCase.prefill,
+            "--prefill-chunk-tokens", testCase.auto ? "auto" : "64",
+        ])
+        #expect(arguments.prefillChunkTokensAuto == testCase.auto)
+        #expect(arguments.resolvesPrefillChunkAuto == testCase.resolves)
+    }
+
+    /// A repeated `--prefill-chunk-tokens` is last-one-wins in both orderings.
+    /// Without the clear on the integer branch, `auto` survives a later
+    /// explicit size and the run resolves its own size over the one asked for.
+    @Test func lastPrefillChunkTokensFlagWinsInBothOrderings() throws {
+        let explicitLast = try Args.parse([
+            "--model", "m.gturbo", "--prompt", "hi",
+            "--prefill-chunk-tokens", "auto",
+            "--prefill-chunk-tokens", "64",
+        ])
+        #expect(explicitLast.prefillChunkTokens == 64)
+        #expect(explicitLast.prefillChunkTokensAuto == false)
+        #expect(explicitLast.resolvesPrefillChunkAuto == false)
+
+        let autoLast = try Args.parse([
+            "--model", "m.gturbo", "--prompt", "hi",
+            "--prefill-chunk-tokens", "64",
+            "--prefill-chunk-tokens", "auto",
+        ])
+        #expect(autoLast.prefillChunkTokensAuto)
+        #expect(autoLast.resolvesPrefillChunkAuto)
+    }
+
     @Test func generationOptionsParseAndStopsRepeat() throws {
         let arguments = try Args.parse([
             "--model", "m.gturbo", "--prompt", "hi",

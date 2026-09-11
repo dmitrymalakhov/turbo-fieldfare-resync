@@ -108,7 +108,7 @@ public func run(args: Args,
             return errored(stderr, "no Metal device", 1)
         }
         var effectiveArgs = args
-        if args.prefillChunkTokensAuto {
+        if args.resolvesPrefillChunkAuto {
             let promptTokens = try estimatedPromptTokens(
                 input: input, tokenizer: tokenizer, device: device)
             effectiveArgs.prefillChunkTokens =

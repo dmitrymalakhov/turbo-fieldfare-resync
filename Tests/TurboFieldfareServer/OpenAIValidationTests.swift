@@ -529,6 +529,243 @@ struct OpenAIValidationTests {
         }
     }
 
+    @Test func unknownTopLevelFieldIsAServerRequestErrorNotMalformedJSON() {
+        // Regression for issue 168: the synthesized decoder discarded
+        // `max_token`, so this body decoded cleanly and the request generated
+        // with the default 4096-token maximum under a 200. The error class is
+        // half the fix — a plain decoding failure reaches the HTTP layer as
+        // "malformed JSON request", which still hides the typo.
+        let data = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],"max_token":4}
+        """#.utf8)
+        do {
+            _ = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+            Issue.record("unknown top-level field decoded instead of failing")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message.contains("max_token"))
+            #expect(param == "max_token")
+            #expect(code == "unknown_parameter")
+        } catch {
+            Issue.record("decoding threw \(error) rather than a ServerRequestError")
+        }
+    }
+
+    @Test func unknownFieldsAreNamedSortedAndTheFirstIsTheParam() {
+        let data = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],"zeta":1,"alpha":2}
+        """#.utf8)
+        do {
+            _ = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+            Issue.record("unknown top-level fields decoded instead of failing")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            // Sorted rather than in body order, so two callers sending the same
+            // typos in different orders get the same answer.
+            #expect(message.contains(#""alpha", "zeta""#))
+            #expect(param == "alpha")
+            #expect(code == "unknown_parameter")
+        } catch {
+            Issue.record("decoding threw \(error) rather than a ServerRequestError")
+        }
+    }
+
+    @Test(arguments: [
+        ("user", #""user":"caller-1""#),
+        ("store", #""store":false"#),
+        ("metadata", #""metadata":{"run":"7"}"#),
+        ("service_tier", #""service_tier":"auto""#),
+        ("prompt_cache_key", #""prompt_cache_key":"cache-1""#),
+        ("safety_identifier", #""safety_identifier":"user-hash""#),
+    ])
+    func toleratedBookkeepingFieldsDecode(_ key: String, _ field: String) throws {
+        let data = Data("""
+        {"model":"m","messages":[{"role":"user","content":"x"}],\(field)}
+        """.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        #expect(validated.messages.count == 1)
+        // Tolerated means ignored: the decoded request keeps no representation
+        // of the key, so nothing downstream can act on it.
+        let encoded = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+        #expect(!encoded.contains("\"\(key)\":"))
+    }
+
+    @Test func responseFormatTextValidates() throws {
+        let data = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "response_format":{"type":"text"}}
+        """#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        #expect(validated.messages.count == 1)
+    }
+
+    @Test(arguments: ["json_object", "json_schema"])
+    func responseFormatStructuredIsUnsupported(_ type: String) throws {
+        // Pre-fix this decoded and generated free text while the caller
+        // believed JSON was enforced; that silence is what issue 168 reports.
+        let data = Data("""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "response_format":{"type":"\(type)",
+           "json_schema":{"name":"s","schema":{"type":"object"}}}}
+        """.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        do {
+            _ = try OpenAIRequestValidator.validate(request, modelID: "m")
+            Issue.record("response_format \(type) validated")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message.contains("structured output"))
+            #expect(param == "response_format")
+            #expect(code == "unsupported_value")
+        }
+    }
+
+    @Test func responseFormatUnknownTypeIsInvalid() throws {
+        let data = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "response_format":{"type":"yaml"}}
+        """#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        do {
+            _ = try OpenAIRequestValidator.validate(request, modelID: "m")
+            Issue.record("unknown response_format type validated")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message.contains("yaml"))
+            #expect(param == "response_format")
+            #expect(code == "invalid_value")
+        }
+    }
+
+    @Test func responseFormatWithoutTypeIsInvalid() throws {
+        // An object of the right shape missing its one required value is a
+        // request error, not malformed JSON.
+        let data = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "response_format":{}}
+        """#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        do {
+            _ = try OpenAIRequestValidator.validate(request, modelID: "m")
+            Issue.record("response_format without a type validated")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message.contains("response_format.type is required"))
+            #expect(param == "response_format")
+            #expect(code == "invalid_value")
+        }
+    }
+
+    @Test(arguments: [
+        "logit_bias", "top_logprobs", "reasoning_effort", "verbosity", "modalities",
+        "audio", "prediction", "web_search_options",
+    ])
+    func knownUnsupportedFieldsAreRefusedAsUnsupportedNotUnknown(_ key: String) {
+        // These are real OpenAI parameters the server cannot honour. Answering
+        // "unrecognized" would send the caller hunting for a typo that is not
+        // there.
+        let data = Data("""
+        {"model":"m","messages":[{"role":"user","content":"x"}],"\(key)":{}}
+        """.utf8)
+        do {
+            _ = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+            Issue.record("\(key) decoded instead of failing")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message == "\(key) is not supported")
+            #expect(param == key)
+            #expect(code == "unsupported_value")
+        } catch {
+            Issue.record("decoding threw \(error) rather than a ServerRequestError")
+        }
+    }
+
+    @Test func unknownKeyNamesAreBoundedAndQuoted() {
+        // The body cap is 5 MiB, so a caller must not be able to have an
+        // arbitrary slice of its own keys quoted back, and a key carrying a
+        // quote must not be able to render as two keys.
+        func rejection(_ extraKeys: String) -> (message: String, param: String?)? {
+            let data = Data("""
+            {"model":"m","messages":[{"role":"user","content":"x"}],\(extraKeys)}
+            """.utf8)
+            do {
+                _ = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+                Issue.record("unknown fields decoded instead of failing")
+                return nil
+            } catch ServerRequestError.invalid(let message, let param, _) {
+                return (message, param)
+            } catch {
+                Issue.record("decoding threw \(error) rather than a ServerRequestError")
+                return nil
+            }
+        }
+
+        let long = String(repeating: "k", count: 200)
+        if let cut = rejection("\"\(long)\":1") {
+            #expect(cut.message.contains(String(repeating: "k", count: 64) + "..."))
+            #expect(!cut.message.contains(String(repeating: "k", count: 65)))
+            // The param is echoed straight out of the body, so it is bounded
+            // the same way the message is, unquoted because it names a field.
+            #expect(cut.param == String(repeating: "k", count: 64) + "...")
+            #expect(cut.param?.contains(String(repeating: "k", count: 65)) == false)
+        }
+
+        // Sorted lexicographically, so the first eight are 1, 10, 11, 12, 2-5.
+        let twelve = (1...12).map { "\"unknown\($0)\":1" }.joined(separator: ",")
+        if let many = rejection(twelve) {
+            #expect(many.message.contains(#""unknown1""#))
+            #expect(many.message.contains(#""unknown12""#))
+            #expect(!many.message.contains(#""unknown9""#))
+            #expect(many.message.contains("and 4 more"))
+        }
+
+        if let quoted = rejection(#""ba\"d":1"#) {
+            #expect(quoted.message.contains(#""ba\"d""#))
+            #expect(quoted.param == #"ba"d"#)
+        }
+    }
+
+    @Test(arguments: [
+        ("functions", #""functions":[{"name":"f","parameters":{"type":"object"}}]"#),
+        ("function_call", #""function_call":{"name":"f"}"#),
+    ])
+    func legacyFunctionsAreUnsupported(_ key: String, _ field: String) {
+        // Refused at decode time like every other unsupported key, so the
+        // answer names the legacy field even beside a mistyped declared one;
+        // a validator-side refusal lost to that field's DecodingError.
+        let data = Data("""
+        {"model":"m","messages":[{"role":"user","content":"x"}],\(field),"temperature":"hot"}
+        """.utf8)
+        do {
+            _ = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+            Issue.record("legacy \(key) decoded instead of failing")
+        } catch ServerRequestError.invalid(let message, let param, let code) {
+            #expect(message.contains("use tools"))
+            #expect(param == key)
+            #expect(code == "unsupported_value")
+        } catch {
+            Issue.record("decoding threw \(error) rather than a ServerRequestError")
+        }
+    }
+
+    @Test func nestedExtrasStayTolerated() throws {
+        // Strictness is the top level only: clients routinely add keys inside
+        // messages, tool definitions, and stream_options, and the nested
+        // decoding here is deliberately structural.
+        let data = Data(#"""
+        {
+          "model":"m",
+          "messages":[{"role":"user","content":"x","annotations":[]}],
+          "stream_options":{"include_usage":true,"continuous_usage_stats":true},
+          "tools":[{"type":"function","function":{
+            "name":"probe",
+            "strict":true,
+            "parameters":{"type":"object","properties":{}}
+          }}]
+        }
+        """#.utf8)
+        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        #expect(validated.tools.count == 1)
+        #expect(validated.includeUsage)
+    }
+
     private func fixture(_ name: String) throws -> OpenAIChatRequest {
         let url = try #require(Bundle.module.url(
             forResource: name, withExtension: nil, subdirectory: "Fixtures"))
@@ -688,6 +925,65 @@ struct ServerArgumentTests {
         #expect(arguments.rdadvisePolicy == .off)
     }
 
+    /// The server rejected `--prefill-chunk-tokens auto` while the CLI accepted
+    /// it and `RUNTIME_CONTROLS.md` promised both took the same values, so this
+    /// throws on the pre-fix parser. On the server the word is an alias for the
+    /// cap and nothing past the parser can tell the two spellings apart: a
+    /// per-request size is the smallest allowed size covering the span, so the
+    /// cap prefills every prompt in those same spans, and the KV ring is sized
+    /// from the cap either way. Only the prefill scratch is sized from the
+    /// chunk, and sizing it per request means reallocating it whenever the
+    /// chosen size moves.
+    @Test func parsesAutoPrefillChunkTokens() throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill-chunk-tokens", "auto",
+        ])
+        #expect(arguments.prefillChunkTokens == PrefillRuntimeConfig.maxChunkTokens)
+
+        // Indistinguishable from the explicit cap, which is the whole claim:
+        // the runtime identity is taken from the configuration, so a prefix
+        // built under `auto` is reusable by a run started at 256.
+        let explicitCap = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill-chunk-tokens", "256",
+        ])
+        #expect(try arguments.resolvedRuntimeConfiguration()
+                == (try explicitCap.resolvedRuntimeConfiguration()))
+
+        // Last flag wins in both directions, as in the CLI: a later integer is
+        // a fixed size rather than an integer layered on a mode still on, and a
+        // later `auto` replaces the integer rather than being ignored because
+        // one was already set.
+        let integerLast = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill-chunk-tokens", "auto",
+            "--prefill-chunk-tokens", "64",
+        ])
+        #expect(integerLast.prefillChunkTokens == 64)
+
+        let autoLast = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill-chunk-tokens", "64",
+            "--prefill-chunk-tokens", "auto",
+        ])
+        #expect(autoLast.prefillChunkTokens == PrefillRuntimeConfig.maxChunkTokens)
+    }
+
+    /// `auto` reaches the resolve guard as the cap, so the guard that tests
+    /// membership of `allowedPrefillChunkTokens` never sees the word and never
+    /// has to learn it.
+    @Test func autoSurvivesTheResolveGuard() throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill-chunk-tokens", "auto",
+        ])
+        let configuration = try arguments.resolvedRuntimeConfiguration()
+        #expect(configuration.prefillPolicy == .chunked)
+        #expect(configuration.prefillConfig.chunkTokens
+                == PrefillRuntimeConfig.maxChunkTokens)
+    }
+
     @Test func parsesSinglePrefixModeAndRejectsUnknownMode() throws {
         let arguments = try ServerArguments.parse([
             "--model", "model.gturbo",
@@ -757,6 +1053,7 @@ struct ServerArgumentTests {
         ["--expert-cache-policy", "mru"],
         ["--prefill", "maybe"],
         ["--prefill-chunk-tokens", "512"],
+        ["--prefill-chunk-tokens", "automatic"],
         ["--rdadvise", "eager"],
     ])
     func rejectsUnsupportedRuntimeValues(flag: [String]) throws {
@@ -774,10 +1071,11 @@ struct ServerArgumentTests {
     }
 
     @Test func allowedValueListRendersChoices() {
-        #expect(ServerArguments.allowedValueList([8]) == "8")
-        #expect(ServerArguments.allowedValueList([8, 16]) == "8 or 16")
-        #expect(ServerArguments.allowedValueList([8, 16, 24, 32]) == "8, 16, 24, or 32")
-        #expect(ServerArguments.allowedValueList([]) == "")
+        #expect(RuntimeConfiguration.allowedValueList([8]) == "8")
+        #expect(RuntimeConfiguration.allowedValueList([8, 16]) == "8 or 16")
+        #expect(RuntimeConfiguration.allowedValueList([8, 16, 24, 32])
+                == "8, 16, 24, or 32")
+        #expect(RuntimeConfiguration.allowedValueList([]) == "")
     }
 
     /// Public 0.5.0 through 0.7.1 printed "--prefill-chunk-tokens must be 32,
@@ -788,19 +1086,23 @@ struct ServerArgumentTests {
     @Test(arguments: [
         (flag: "--expert-cache-slots",
          allowed: RuntimeConfiguration.allowedExpertCacheSlots,
-         badValue: "12"),
+         badValue: "12",
+         namesAuto: false),
         (flag: "--expert-cache-slots",
          allowed: RuntimeConfiguration.allowedExpertCacheSlots,
-         badValue: "many"),
+         badValue: "many",
+         namesAuto: false),
         (flag: "--prefill-chunk-tokens",
          allowed: RuntimeConfiguration.allowedPrefillChunkTokens,
-         badValue: "512"),
+         badValue: "512",
+         namesAuto: true),
         (flag: "--prefill-chunk-tokens",
          allowed: RuntimeConfiguration.allowedPrefillChunkTokens,
-         badValue: "many"),
+         badValue: "many",
+         namesAuto: true),
     ])
     func parseRejectionNamesExactlyTheAllowedValues(
-        testCase: (flag: String, allowed: [Int], badValue: String)
+        testCase: (flag: String, allowed: [Int], badValue: String, namesAuto: Bool)
     ) {
         do {
             _ = try ServerArguments.parse([
@@ -813,13 +1115,21 @@ struct ServerArgumentTests {
                     "the rejection does not lead with \(testCase.flag): \(error)")
             #expect(named == testCase.allowed,
                     "\(testCase.flag) rejection names \(named), guard accepts \(testCase.allowed)")
+            // The word is not in the integer array, so nothing above would
+            // notice a rejection that kept calling `auto` illegal - which is
+            // exactly what the pre-fix parser printed.
+            #expect(error.description.contains("auto") == testCase.namesAuto,
+                    "\(testCase.flag) rejection: \(error)")
         } catch {
             Issue.record("unexpected error for \(testCase.flag): \(error)")
         }
     }
 
     @Test func resolveRejectionNamesExactlyTheAllowedValues() {
-        let cases: [(flag: String, arguments: ServerArguments, allowed: [Int])] = [
+        let cases: [(flag: String,
+                     arguments: ServerArguments,
+                     allowed: [Int],
+                     namesAuto: Bool)] = [
             (flag: "--expert-cache-slots",
              arguments: ServerArguments(model: "model.gturbo",
                                         port: 8080,
@@ -834,7 +1144,8 @@ struct ServerArgumentTests {
                                         rdadvisePolicy: .off,
                                         visionPack: nil,
                                         visionResidency: .onDemand),
-             allowed: RuntimeConfiguration.allowedExpertCacheSlots),
+             allowed: RuntimeConfiguration.allowedExpertCacheSlots,
+             namesAuto: false),
             (flag: "--prefill-chunk-tokens",
              arguments: ServerArguments(model: "model.gturbo",
                                         port: 8080,
@@ -849,7 +1160,8 @@ struct ServerArgumentTests {
                                         rdadvisePolicy: .off,
                                         visionPack: nil,
                                         visionResidency: .onDemand),
-             allowed: RuntimeConfiguration.allowedPrefillChunkTokens),
+             allowed: RuntimeConfiguration.allowedPrefillChunkTokens,
+             namesAuto: true),
         ]
         for testCase in cases {
             do {
@@ -861,6 +1173,10 @@ struct ServerArgumentTests {
                         "the rejection does not lead with \(testCase.flag): \(error)")
                 #expect(named == testCase.allowed,
                         "\(testCase.flag) rejection names \(named), guard accepts \(testCase.allowed)")
+                // One sentence for both doors: a flag rejected here must offer
+                // the same values it offers when `parse` rejects it.
+                #expect(error.description.contains("auto") == testCase.namesAuto,
+                        "\(testCase.flag) rejection: \(error)")
             } catch {
                 Issue.record("unexpected error for \(testCase.flag): \(error)")
             }
@@ -874,10 +1190,17 @@ struct ServerArgumentTests {
         let defaultSlots = try ServerArguments.parse(["--model", "model.gturbo"]).expertCacheSlots
         #expect(namedSlots == RuntimeConfiguration.allowedExpertCacheSlots + [defaultSlots],
                 "the --expert-cache-slots help line names \(namedSlots)")
-        let chunkLine = try #require(lines.first { $0.contains("--prefill-chunk-tokens") })
+        #expect(!slotsLine.contains("auto"),
+                "the --expert-cache-slots help line offers auto: \(slotsLine)")
+        let flagLine = try #require(lines.first { $0.contains("--prefill-chunk-tokens") })
+        #expect(flagLine.contains("<n|auto>"),
+                "the --prefill-chunk-tokens placeholder does not admit auto: \(flagLine)")
+        let chunkLine = try #require(lines.first { $0.contains("Prefill chunk size:") })
         let namedChunks = integers(in: String(chunkLine))
         #expect(namedChunks == RuntimeConfiguration.allowedPrefillChunkTokens,
                 "the --prefill-chunk-tokens help line names \(namedChunks)")
+        #expect(chunkLine.contains("auto"),
+                "the --prefill-chunk-tokens help line omits auto: \(chunkLine)")
     }
 
     @Test func imageDataURLPreservesOrderedMultimodalParts() throws {
