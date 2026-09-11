@@ -120,7 +120,10 @@ does not claim the Python connector or Exchange authentication has succeeded;
 trust for this connection, rather than mirroring every macOS trust policy.
 
 **Choose File…** accepts a PEM certificate bundle or a DER-encoded CER/CRT/DER
-file; it checks the contents rather than relying on the extension. Files must
+file. You can also enter an absolute path (for example `/etc/ssl/cert.pem`) or
+a path starting with `~/` in **Certificate file path** and click **Load File**,
+then **Save & Verify**. Both methods check the contents rather than relying on
+the extension. Files must
 contain only CA or supported self-signed server certificates (no private keys or P12/PFX identities), at most
 128 certificates and 1 MB. Selected public certificates are copied into the
 connection profile, so moving the original file does not break the connection.

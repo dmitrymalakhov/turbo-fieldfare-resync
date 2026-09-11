@@ -7,6 +7,7 @@ struct MCPCertificateSettingsView: View {
     @Binding var profile: AppMCPProfile
     @State private var choosingKeychain = false
     @State private var error: String?
+    @State private var certificatePath = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -42,6 +43,16 @@ struct MCPCertificateSettingsView: View {
                 Button("Choose from Keychain…", systemImage: "key.horizontal") { choosingKeychain = true }
                 Button("Choose File…", systemImage: "doc") { chooseFile() }
             }
+            Text("Certificate file path").font(.callout.weight(.medium))
+            HStack {
+                TextField("/etc/ssl/cert.pem", text: $certificatePath)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Certificate file path")
+                Button("Load File") { loadCertificatePath() }
+                    .disabled(certificatePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Text("Enter a PEM, CER, CRT or DER file path and click Load File. Certificates are copied into this connection; load the file again after renewal.")
+                .font(.caption).foregroundStyle(.secondary)
             if profile.selectedCertificates != nil || !profile.certificateBundle.isEmpty {
                 Button("Use Default Certificates") { select(nil) }.buttonStyle(.link)
             }
@@ -56,6 +67,18 @@ struct MCPCertificateSettingsView: View {
 
     private func select(_ selection: AppMCPCertificateSelection?) {
         profile.selectedCertificates = selection; profile.certificateBundle = ""; error = nil
+    }
+
+    private func loadCertificatePath() {
+        let path = (certificatePath.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        guard path.hasPrefix("/") else {
+            error = "Enter an absolute certificate file path, such as /etc/ssl/cert.pem."
+            return
+        }
+        do {
+            select(try AppMCPCertificates.readFile(URL(fileURLWithPath: path)))
+            certificatePath = path
+        } catch { self.error = error.localizedDescription }
     }
 
     private func chooseFile() {
