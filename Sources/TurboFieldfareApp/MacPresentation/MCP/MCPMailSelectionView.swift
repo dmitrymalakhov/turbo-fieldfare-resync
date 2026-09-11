@@ -133,7 +133,8 @@ public struct MCPMailSelectionView: View {
                 Button("Отмена", action: cancel).keyboardShortcut(.cancelAction)
                 Spacer()
                 Text("\(selectedSenders.count) отправителей · \(selectedIDs.count) писем").foregroundStyle(.secondary)
-                Button(selectedIDs.isEmpty ? "Продолжить с пустой выборкой" : "Анализировать выбранные (\(selectedIDs.count))") {
+                Button(selectedIDs.isEmpty ? "Продолжить с пустой выборкой" :
+                        (request.prompt.isEmpty ? "Загрузить тексты (\(selectedIDs.count))" : "Анализировать выбранные (\(selectedIDs.count))")) {
                     confirm(.init(messageIDs: selectedIDs, senders: selectedSenders, subject: subjectSearch))
                 }.buttonStyle(.borderedProminent)
                     .disabled(selectedSenders.isEmpty && !request.preview.headers.isEmpty)
@@ -191,6 +192,13 @@ struct MCPMailContactsView: View {
                                 Toggle("Исключать", isOn: Binding(get: { contacts.excludedEmails.contains(contact.email) }, set: { enabled in
                                     if enabled { contacts.excludedEmails.insert(contact.email) } else { contacts.excludedEmails.remove(contact.email) }
                                 })).toggleStyle(.checkbox).font(.caption)
+                            }.contextMenu {
+                                Button("Редактировать контакт") { contactName = contact.name; contactEmail = contact.email }
+                                Button("Удалить контакт", role: .destructive) {
+                                    contacts.contacts.removeAll { $0.email == contact.email }
+                                    contacts.excludedEmails.remove(contact.email); members.remove(contact.email)
+                                    for index in contacts.groups.indices { contacts.groups[index].emails.remove(contact.email) }
+                                }
                             }
                         }
                     }.listStyle(.inset)

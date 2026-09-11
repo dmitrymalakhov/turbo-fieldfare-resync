@@ -7,11 +7,13 @@ public struct AppMCPMailSnapshot: Sendable {
     public var count: Int
     public var period: String
     public var complete: Bool
+    public var bodyCharacterCount: Int? = nil
 }
 
 @MainActor
 @Observable
 public final class AppMCPManager {
+    public let mailArchive: AppMCPMailArchive
     public let mailReview = AppMCPMailReviewCoordinator()
     public private(set) var profiles: [AppMCPProfile] = []
     public private(set) var statuses: [UUID: AppMCPStatus] = [:]
@@ -37,6 +39,7 @@ public final class AppMCPManager {
     public init(store: AppMCPProfileStore, secrets: any AppMCPSecretStoring,
                 factory: @escaping @MainActor () -> any AppMCPClient = { AppMCPStdioClient() },
                 installerFactory: @escaping @MainActor () -> AppMCPExchangeInstaller = { AppMCPExchangeInstaller() }) {
+        self.mailArchive = AppMCPMailArchive(fileURL: store.fileURL.deletingLastPathComponent().appendingPathComponent("mail-archive.json"))
         self.store = store; self.secrets = secrets; self.factory = factory; self.installerFactory = installerFactory
         do { profiles = try store.load() }
         catch { readableStore = false; self.error = "Saved connections could not be opened. The file was left unchanged: \(store.fileURL.path)" }
@@ -44,6 +47,9 @@ public final class AppMCPManager {
     public static func production() -> AppMCPManager {
         AppMCPManager(store: .init(fileURL: AppMCPProfileStore.applicationDirectory.appendingPathComponent("mcp-connections.json")),
                       secrets: AppMCPKeychainStore())
+    }
+    public var hasConnectedMail: Bool {
+        profiles.contains { $0.kind.isMail && status($0.id) == .connected }
     }
     public func status(_ id: UUID) -> AppMCPStatus { statuses[id] ?? .disconnected }
     public func credentials(_ id: UUID) throws -> AppMCPCredentials { try secrets.read(id: id) }

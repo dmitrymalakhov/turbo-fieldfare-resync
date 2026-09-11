@@ -52,11 +52,16 @@ extension AppMCPManager {
                                  progress: (@MainActor (Int) -> Void)? = nil) async throws -> AppMCPMailSnapshot {
         guard selection.messageIDs.isSubset(of: Set(preview.matching(senders: selection.senders, subject: selection.subject).map(\.id))) else { throw AppMCPError.protocolError }
         let selected = preview.headers.filter { selection.messageIDs.contains($0.id) }
-        var blocks: [String] = [], characters = 0, complete = preview.complete
+        var blocks: [String] = [], characters = 0
+        var bodyCharacters = 0
+        var archived: [AppMCPStoredMail] = []
+        let complete = preview.complete
         let budget = 300_000
         for header in selected {
             try Task.checkCancellation()
-            if blocks.count >= 1_000 || characters >= budget { complete = false; break }
+            if blocks.count >= 1_000 || characters >= budget {
+                throw AppMCPError.configuration("Выборка превышает лимит 1 000 писем или 300 000 символов. Выбери меньше писем, чтобы загрузить их содержимое полностью.")
+            }
             var text = "", offset = 0, offsets = Set<Int>()
             repeat {
                 guard offsets.insert(offset).inserted else { throw AppMCPError.protocolError }
@@ -69,9 +74,13 @@ extension AppMCPManager {
                 }
                 let available = max(0, budget - characters - text.count)
                 text += String(body.prefix(available))
-                if body.count > available { complete = false; break }
+                if body.count > available {
+                    throw AppMCPError.configuration("Тексты выбранных писем превышают лимит загрузки. Сократи выборку; содержимое не будет заменено заголовками.")
+                }
                 guard let next = message["body_next_offset"]?.intValue else { break }
-                if characters + text.count >= budget { complete = false; break }
+                if characters + text.count >= budget {
+                    throw AppMCPError.configuration("Текст письма не помещается в лимит загрузки. Сократи выборку.")
+                }
                 guard next > offset else { throw AppMCPError.protocolError }
                 offset = next
             } while true
@@ -80,12 +89,17 @@ extension AppMCPManager {
             Subject: \(header.subject)
             From: \(header.senderName) <\(header.sender)>
             Date: \(header.date)
-            EWS ID: \(header.id)
-            \(text)
+            Body (message content, not a subject summary):
+            \(text.isEmpty ? "[The server returned an empty text body for this message.]" : text)
+            [End message body]
             """
             let available = max(0, budget - characters)
-            blocks.append(String(block.prefix(available))); characters += min(available, block.count)
-            if block.count > available { complete = false }
+            guard block.count <= available else {
+                throw AppMCPError.configuration("Тексты выбранных писем превышают лимит загрузки. Выбери меньше писем.")
+            }
+            blocks.append(block); characters += block.count
+            bodyCharacters += text.count
+            archived.append(.init(profileID: preview.profileID, header: header, folder: preview.folder, body: text))
             progress?(blocks.count)
         }
         try Task.checkCancellation()
@@ -103,7 +117,9 @@ extension AppMCPManager {
 
         \(blocks.joined(separator: "\n\n---\n\n"))
         """
-        return .init(text: text, count: blocks.count, period: preview.period, complete: complete)
+        try mailArchive.upsert(archived)
+        return .init(text: text, count: blocks.count, period: preview.period, complete: complete,
+                     bodyCharacterCount: bodyCharacters)
     }
 }
 #endif

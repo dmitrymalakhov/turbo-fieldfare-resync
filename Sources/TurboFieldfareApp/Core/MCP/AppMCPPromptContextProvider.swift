@@ -13,6 +13,13 @@ public final class AppMCPPromptContextProvider: AppPromptContextProviding {
 
     public func prepare(prompt: String, recentUserPrompts: [String],
                         progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
+        try await prepare(prompt: prompt, recentUserPrompts: recentUserPrompts,
+                          hasLoadedMail: recentUserPrompts.contains { $0.contains("[Почта:") }, progress: progress)
+    }
+
+    public func prepare(prompt: String, recentUserPrompts: [String], hasLoadedMail: Bool,
+                        progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
+        if hasLoadedMail, !AppMCPMailIntent.requestsFreshMail(prompt) { return nil }
         // Mail routing is an optional enhancement. Without a configured Exchange
         // profile, every prompt belongs to the ordinary local-model chat, including
         // prompts that contain words such as "mail" or "почта".
@@ -51,7 +58,9 @@ public final class AppMCPPromptContextProvider: AppPromptContextProviding {
         }
         try Task.checkCancellation()
         let summary = "Почта: \(profile.name) · \(intent.periodLabel) · \(intent.folder) · \(snapshot.count) писем"
+            + (snapshot.bodyCharacterCount.map { " · \($0) символов текста" } ?? "")
             + (snapshot.complete ? "" : " · загружена часть периода")
+            + " · тексты сохранены в диалоге"
         return AppExternalPromptContext(
             attachment: AppPromptAttachment(fileName: summary, formatLabel: "Mail", extractedText: snapshot.text,
                                             wasTruncatedDuringExtraction: !snapshot.complete),

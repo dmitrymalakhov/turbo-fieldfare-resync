@@ -3327,7 +3327,11 @@ public final class AppModel {
     private func fitExternalPromptContext(_ context: AppExternalPromptContext,
                                           into request: AppGenerationRequest) async throws -> (request: AppGenerationRequest, truncated: Bool) {
         guard let pending = request.messages.last else { throw AppInferenceError.invalidRequest("Prompt is missing.") }
+        let isMail = context.attachment.formatLabel == "Mail"
         var budget = max(0, transportCharacterBudget - pending.content.count - 1_000)
+        if isMail, context.attachment.characterCount > budget {
+            throw AppInferenceError.invalidRequest("Тексты выбранных писем слишком велики для контекста. Выбери меньше писем или увеличь контекст модели: анализ только заголовков вместо содержимого не выполняется.")
+        }
         while budget > 0 {
             try Task.checkCancellation()
             let content = AppPromptContext.compose(userPrompt: pending.content, attachments: [context.attachment],
@@ -3346,6 +3350,9 @@ public final class AppModel {
                 return (fitted, context.attachment.characterCount > budget)
             } catch let failure as AppInferenceError {
                 guard case .contextOverflow = failure else { throw failure }
+                if isMail {
+                    throw AppInferenceError.invalidRequest("Полные тексты выбранных писем не помещаются вместе с запросом в контекст модели. Выбери меньше писем или увеличь контекст. Выборка не обрезана до заголовков.")
+                }
                 budget /= 2
             }
         }
@@ -3516,9 +3523,11 @@ public final class AppModel {
         var visiblePrompt = promptDisplayText(prompt: turn.prompt, attachments: turn.documents)
         let summaryBeforePreparation = selectedChat.contextSummary
         do {
-            if let provider = promptContextProvider {
+            if let provider = promptContextProvider, !turn.documents.contains(where: { $0.formatLabel == "Mail" }) {
                 let recent = Array(selectedChat.messages.filter { $0.role == .user }.suffix(5).map(\.content))
-                let context = try await provider.prepare(prompt: turn.prompt, recentUserPrompts: recent, progress: { [weak self] message in
+                let hasLoadedMail = selectedChat.messages.contains { $0.role == .user && AppPromptContext.containsMailReference($0.contextContent) }
+                    || turn.documents.contains { $0.formatLabel == "Mail" }
+                let context = try await provider.prepare(prompt: turn.prompt, recentUserPrompts: recent, hasLoadedMail: hasLoadedMail, progress: { [weak self] message in
                     self?.externalContextProgress = message
                 })
                 if let context {
@@ -3813,6 +3822,9 @@ public final class AppModel {
             : AppPromptContext.compose(userPrompt: turn.prompt,
                 attachments: turn.documents,
                 maximumAttachmentCharacters: max(0, transportCharacterBudget - turn.prompt.count))
+        if turn.documents.contains(where: { $0.formatLabel == "Mail" && !composed.contains($0.extractedText) }) {
+            throw AppInferenceError.invalidRequest("Полные тексты почтовой выборки не помещаются в контекст. Выбери меньше писем или увеличь контекст модели.")
+        }
         let pending = AppGenerationMessage(role: .user, content: composed)
         let template = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),

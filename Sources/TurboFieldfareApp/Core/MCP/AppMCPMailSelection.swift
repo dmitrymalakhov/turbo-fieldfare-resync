@@ -76,7 +76,7 @@ public struct AppMCPMailContacts: Codable, Equatable, Sendable {
     }
 }
 
-public struct AppMCPMailHeader: Identifiable, Equatable, Sendable {
+public struct AppMCPMailHeader: Codable, Identifiable, Equatable, Sendable {
     public let id: String
     public let changeKey: String?
     public let sender: String

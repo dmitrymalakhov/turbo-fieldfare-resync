@@ -30,6 +30,12 @@ public struct AppPromptAttachment: Identifiable, Codable, Equatable, Sendable {
 }
 
 public enum AppPromptContext {
+    /// Detect the persisted attachment envelope, including older saved conversations.
+    public static func containsMailReference(_ content: String) -> Bool {
+        content.range(of: #"(?m)^\[Attached document \d+: [^\n]+ \(Mail\)\]$"#,
+                      options: .regularExpression) != nil
+    }
+
     public static func compose(
         userPrompt: String,
         attachments: [AppPromptAttachment],

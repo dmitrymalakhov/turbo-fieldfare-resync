@@ -15,4 +15,13 @@ public struct AppExternalPromptContext: Sendable {
 public protocol AppPromptContextProviding: AnyObject {
     func prepare(prompt: String, recentUserPrompts: [String],
                  progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext?
+    func prepare(prompt: String, recentUserPrompts: [String], hasLoadedMail: Bool,
+                 progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext?
+}
+
+public extension AppPromptContextProviding {
+    func prepare(prompt: String, recentUserPrompts: [String], hasLoadedMail: Bool,
+                 progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
+        try await prepare(prompt: prompt, recentUserPrompts: recentUserPrompts, progress: progress)
+    }
 }

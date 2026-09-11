@@ -7,6 +7,16 @@ public struct AppMCPMailIntent: Equatable, Sendable {
         switch period { case "yesterday": "вчера"; case "this_week": "текущая неделя"; default: "сегодня" }
     }
 
+    /// With a saved selection, ordinary questions use that conversation's mail.
+    /// Only an explicit refresh/new period starts another mailbox selection.
+    public static func requestsFreshMail(_ prompt: String) -> Bool {
+        let text = normalize(prompt)
+        if matches(#"\b(?:загрузи|загрузить|обнови|обновить|перезагрузи|проверь\s+почту|проверить\s+почту|fetch|reload|refresh)\b"#, text)
+            || matches(#"\b(?:новые|свежие|другие|new|latest)\s+(?:письма|письм|сообщения|emails?|mail)\b"#, text) { return true }
+        if matches(#"\b(?:этих|эти|этом|этого|выбранн\p{L}*|загруженн\p{L}*|выгруженн\p{L}*|прочитанн\p{L}*|these|loaded|selected)\b"#, text) { return false }
+        return matches(#"\b(?:сегодня|вчера|недел\p{L}*|месяц\p{L}*|позавчера|today|yesterday|week|month)\b"#, text)
+    }
+
     /// Conservative routing for direct mail requests, independent of model text
     /// and tool annotations. Ambiguous/unsupported dates fail before mailbox access.
     public static func resolve(_ prompt: String, previousUserPrompt: String? = nil) throws -> Self? {
@@ -28,7 +38,7 @@ public struct AppMCPMailIntent: Equatable, Sendable {
         let today = matches(#"\b(?:сегодня|сегодняшн\p{L}*|today)\b"#, text)
         let yesterday = matches(#"\b(?:вчера|вчерашн\p{L}*|yesterday)\b"#, text)
         let week = matches(#"\b(?:недел\p{L}*|week)\b"#, text)
-        let read = matches(#"\b(?:покажи|разбери|проанализируй|прочитай|проверь|сводк\p{L}*|обзор|важн\p{L}*|пришл\p{L}*|приходил\p{L}*|получил\p{L}*|summary|summari[sz]e|show|read|check|review|analy[sz]e)\b"#, text)
+        let read = matches(#"\b(?:покажи|разбери|проанализируй|прочитай|проверь|загрузи|загрузить|обнови|обновить|перезагрузи|fetch|reload|refresh|сводк\p{L}*|обзор|важн\p{L}*|пришл\p{L}*|приходил\p{L}*|получил\p{L}*|summary|summari[sz]e|show|read|check|review|analy[sz]e)\b"#, text)
         if matches(#"\b(?:прошл\p{L}*|предыдущ\p{L}*|последн\p{L}*|позавчера|завтра|месяц\p{L}*|last|previous|month|tomorrow)\b|\d\s*(?:дн\p{L}*|day\p{L}*)|\d{1,4}[./-]\d{1,2}|\bс\s+понедельника\s+по\b"#, text) {
             throw AppMCPError.configuration("Для загрузки из сообщения пока доступны: сегодня, вчера или текущая неделя с понедельника. Уточни период в запросе.")
         }

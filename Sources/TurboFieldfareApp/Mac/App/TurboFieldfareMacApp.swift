@@ -106,7 +106,7 @@ struct TurboFieldfareMacApp: App {
 
     var body: some Scene {
         Window("TurboFieldfare", id: "main") {
-            RootView(model: model)
+            RootView(model: model, hasConnectedMail: mcpManager.hasConnectedMail)
                 .sheet(item: Binding(get: { mcpManager.mailReview.pending }, set: { value in
                     if value == nil, let pending = mcpManager.mailReview.pending { mcpManager.mailReview.cancel(pending.id) }
                 })) { request in
@@ -149,6 +149,9 @@ struct TurboFieldfareMacApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appSettings) {
+                if mcpManager.hasConnectedMail {
+                    Button("Почта — письма, контакты и группы…") { openWindow(id: "mail") }
+                }
                 Button("MCP Connections…") { openWindow(id: "mcp-connections") }
                     .keyboardShortcut(",", modifiers: .command)
             }
@@ -203,6 +206,9 @@ struct TurboFieldfareMacApp: App {
                     .disabled(!model.canRemoveVisionPack)
             }
             CommandMenu("Settings") {
+                if mcpManager.hasConnectedMail {
+                    Button("Почта — письма, контакты и группы…") { openWindow(id: "mail") }
+                }
                 Button("MCP Connections…") { openWindow(id: "mcp-connections") }
                 Divider()
                 Picker("Send Message With", selection: newlineShortcutBinding) {
@@ -228,6 +234,22 @@ struct TurboFieldfareMacApp: App {
                 }
             }
         }
+
+        Window("Почта", id: "mail") {
+            MCPMailWorkspaceView(manager: mcpManager) { text in
+                guard model.canEditSelectedChat else {
+                    mcpManager.error = "Дождитесь завершения текущей операции перед добавлением писем."
+                    return
+                }
+                model.addPromptAttachment(AppPromptAttachment(fileName: "Выбранные письма", formatLabel: "Mail",
+                    extractedText: text, wasTruncatedDuringExtraction: false))
+                openWindow(id: "main")
+            }
+            .preferredColorScheme(AppAppearance.resolve(appearanceRawValue).preferredColorScheme)
+        }
+        .commandsRemoved()
+        .defaultSize(width: 1100, height: 760)
+        .windowResizability(.contentMinSize)
 
         Window("MCP Connections", id: "mcp-connections") {
             MCPConnectionsView(manager: mcpManager) { snapshot in

@@ -31,6 +31,7 @@ private final class MCPTestClient: AppMCPClient {
     var mailCount = 237
     var mailDelay: Duration?
     var toolReply: AppMCPValue?
+    var bodies: [String: String] = [:]
     var advertisedTools = ["check_connection", "list_messages", "get_message", "list_calendar_events", "send_email"]
     func start(executable: String, arguments: [String], directory: String, environment: [String: String]) async throws {
         self.environment = environment
@@ -52,8 +53,13 @@ private final class MCPTestClient: AppMCPClient {
         if name == "get_message" {
             let id = params["arguments"]?["message_id"]?.stringValue ?? ""
             let index = id.replacingOccurrences(of: "mail-", with: "")
+            let full = bodies[id] ?? "Body \(index)"
+            let offset = params["arguments"]?["body_offset"]?.intValue ?? 0
+            let size = params["arguments"]?["max_body_chars"]?.intValue ?? 4000
+            let chunk = String(full.dropFirst(offset).prefix(size))
+            let end = offset + chunk.count
             return .object(["structuredContent": .object([
-                "id": .string(id), "body": .string("Body \(index)"), "body_next_offset": .null])])
+                "id": .string(id), "body": .string(chunk), "body_next_offset": end < full.count ? .number(Double(end)) : .null])])
         }
         if name == "list_messages" {
             if let mailDelay { try await Task.sleep(for: mailDelay) }
@@ -86,6 +92,18 @@ private final class MCPContextPreparingClient: AppGenerationRequestPreparing, @u
     func cancel() { inner.cancel() }
 }
 
+private final class MCPRecordingClient: AppInferenceClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: [AppGenerationRequest] = []
+    var requests: [AppGenerationRequest] { lock.withLock { captured } }
+    let inner = MockInferenceClient(response: "Answer", tokenDelayNanos: 1)
+    func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
+        lock.withLock { captured.append(request) }
+        return inner.generate(request)
+    }
+    func cancel() { inner.cancel() }
+}
+
 @MainActor
 private final class MCPLargeContextProvider: AppPromptContextProviding {
     func prepare(prompt: String, recentUserPrompts: [String], progress: @escaping @MainActor (String) -> Void) async throws -> AppExternalPromptContext? {
@@ -97,6 +115,91 @@ private final class MCPLargeContextProvider: AppPromptContextProviding {
 @Suite(.serialized)
 @MainActor
 struct AppMCPTests {
+    @Test func mailWorkspaceRequiresAnActiveMailConnection() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { MCPTestClient() })
+        defer { manager.stopAll() }
+        #expect(!manager.hasConnectedMail)
+        let mail = profile()
+        try manager.save(mail, credentials: .init(password: "test"))
+        #expect(!manager.hasConnectedMail)
+        try await manager.ensureConnected(mail.id)
+        #expect(manager.hasConnectedMail)
+        manager.disconnect(mail.id)
+        #expect(!manager.hasConnectedMail)
+        var other = AppMCPProfile(kind: .stdio)
+        other.name = "Other MCP"; other.executable = "/test/other-mcp"
+        try manager.save(other, credentials: .init())
+        try await manager.ensureConnected(other.id)
+        #expect(manager.status(other.id) == .connected)
+        #expect(!manager.hasConnectedMail)
+    }
+
+    @Test func completeBodiesSurviveFollowupQuestionsWithoutReloadingMail() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(); client.mailCount = 1
+        let body = "Согласование перенесено на 18 сентября. BODY_ONLY_DETAIL_83A"
+        client.bodies["mail-0"] = body
+        let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
+        let inference = MCPRecordingClient()
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager, review: reviewAllMailForTest), client: inference)
+        model.promptText = "Разбери почту за сегодня"
+        model.submitPrompt(); try await waitForPrompt(model)
+        #expect(model.error == nil)
+        #expect(inference.requests.last?.messages.last?.content.contains(body) == true)
+        let saved = try JSONDecoder().decode(AppChat.self, from: JSONEncoder().encode(model.selectedChat))
+        #expect(saved.messages.first?.contextContent.contains(body) == true)
+        let calls = client.calls.count
+        for prompt in ["Проанализируй содержание этих писем", "Какие сроки указаны в письме?", "Кто должен ответить?", "Напиши краткий вывод по письмам"] {
+            model.promptText = prompt; model.submitPrompt(); try await waitForPrompt(model)
+            #expect(model.error == nil)
+            #expect(client.calls.count == calls)
+            #expect(manager.mailReview.pending == nil)
+            #expect(inference.requests.last?.messages.contains { $0.content.contains(body) } == true)
+        }
+        model.promptText = "Загрузи письма за вчера"
+        model.submitPrompt(); try await waitForPrompt(model)
+        #expect(client.calls.count > calls)
+        #expect(try AppMCPMailIntent.resolve("Обнови почту")?.period == "today")
+    }
+
+    @Test func selectedBodyContinuationReachesTheEndAndLocalLimitFailsClosed() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(); client.mailCount = 1
+        client.bodies["mail-0"] = String(repeating: "x", count: 45_000) + "BODY_TAIL_SENTINEL"
+        let value = profile(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(value, credentials: .init(password: "test")); defer { manager.stopAll() }
+        try await manager.ensureConnected(value.id)
+        let preview = try await manager.previewMail(value.id, period: "today", folder: "Inbox")
+        let selection = AppMCPMailSelection(messageIDs: ["mail-0"], senders: ["person@example.com"])
+        let snapshot = try await manager.readSelectedMail(preview, selection: selection)
+        #expect(snapshot.text.contains("BODY_TAIL_SENTINEL"))
+        #expect(snapshot.bodyCharacterCount == client.bodies["mail-0"]?.count)
+        #expect(snapshot.complete)
+        #expect(client.calls.filter { $0.1["name"]?.stringValue == "get_message" }.map { $0.1["arguments"]?["body_offset"]?.intValue } == [0, 20_000, 40_000])
+        client.bodies["mail-0"] = String(repeating: "x", count: 301_000)
+        await #expect(throws: AppMCPError.self) { try await manager.readSelectedMail(preview, selection: selection) }
+    }
+
+    @Test func manuallyAttachedMailIsAnalyzedWithoutAnotherMailboxRead() async throws {
+        let store = try temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let client = MCPTestClient(), manager = AppMCPManager(store: store, secrets: MCPTestSecrets(), factory: { client })
+        try manager.save(profile(), credentials: .init(password: "test")); defer { manager.stopAll() }
+        let inference = MCPRecordingClient()
+        let model = promptModel(store, provider: AppMCPPromptContextProvider(manager: manager), client: inference)
+        model.addPromptAttachment(.init(fileName: "Selected mail", formatLabel: "Mail", extractedText: "BODY_FROM_MANUAL_SELECTION"))
+        model.promptText = "Разбери почту за сегодня"
+        model.submitPrompt(); try await waitForPrompt(model)
+        #expect(model.error == nil)
+        #expect(client.calls.isEmpty)
+        #expect(inference.requests.last?.messages.last?.content.contains("BODY_FROM_MANUAL_SELECTION") == true)
+    }
+
     @Test func cancellingTaskClosesPendingMailReview() async throws {
         let coordinator = AppMCPMailReviewCoordinator()
         let preview = AppMCPMailPreview(profileID: UUID(), period: "today", folder: "Inbox", bounds: "test", headers: [], complete: true)
@@ -118,6 +221,7 @@ struct AppMCPTests {
         try await manager.ensureConnected(value.id)
         let preview = try await manager.previewMail(value.id, period: "today", folder: "Inbox")
         #expect(preview.headers.count == 23)
+        #expect(manager.mailArchive.messages.isEmpty)
         #expect(preview.complete)
         #expect(!client.calls.contains { $0.1["name"]?.stringValue == "get_message" })
         for call in client.calls where call.1["name"]?.stringValue == "list_messages" {
@@ -129,6 +233,8 @@ struct AppMCPTests {
         #expect(snapshot.count == 1)
         #expect(snapshot.text.contains("Body 0"))
         #expect(!snapshot.text.contains("Body 1"))
+        #expect(manager.mailArchive.messages.count == 1)
+        #expect(manager.mailArchive.messages.first?.body == "Body 0")
         #expect(client.calls.filter { $0.1["name"]?.stringValue == "get_message" }.map { $0.1["arguments"]?["message_id"]?.stringValue } == ["mail-0"])
         await #expect(throws: AppMCPError.self) {
             try await manager.readSelectedMail(preview, selection: .init(messageIDs: ["mail-1"], senders: ["person@example.com"]))
@@ -731,17 +837,15 @@ struct AppMCPTests {
         #expect(client.calls.count == before)
     }
 
-    @Test func largeMailContextFitsBeforeInferenceAndDisclosesTruncation() async throws {
+    @Test func oversizedMailFailsInsteadOfAnalyzingOnlyHeaders() async throws {
         let store = try temporaryStore(); defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
         let model = promptModel(store, provider: MCPLargeContextProvider(), client: MCPContextPreparingClient())
         model.promptText = "Разбери почту за неделю"
         model.submitPrompt(); try await waitForPrompt(model)
-        #expect(model.error == nil)
-        let user = try #require(model.selectedChat.messages.first { $0.role == .user })
-        #expect(user.contextContent.count <= 2_000)
-        #expect(user.contextContent.contains("Fixture mail body"))
-        #expect(user.contextContent.contains("was truncated"))
-        #expect(user.content.contains("не поместилась в контекст"))
+        #expect(model.error != nil)
+        #expect(model.selectedChat.messages.isEmpty)
+        #expect(model.promptText == "Разбери почту за неделю")
+        #expect(model.outputText.isEmpty)
     }
 
     private func promptModel(_ store: AppMCPProfileStore, provider: any AppPromptContextProviding,

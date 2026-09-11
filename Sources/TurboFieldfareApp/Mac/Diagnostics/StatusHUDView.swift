@@ -4,6 +4,7 @@ import SwiftUI
 
 struct StatusHUDView: View {
     @Environment(\.openWindow) private var openWindow
+    var hasConnectedMail = false
     let model: AppModel
     let isChatSidebarVisible: Bool
     let isInspectorVisible: Bool
@@ -55,6 +56,11 @@ struct StatusHUDView: View {
                     InfoPopoverButton(subject: "Memory", text: memoryHelp, arrowEdge: .bottom)
                         .accessibilityIdentifier(.hudMemoryInfo)
                 }
+            }
+            if hasConnectedMail {
+            Button { openWindow(id: "mail") } label: {
+                Label("Почта", systemImage: "envelope")
+            }.buttonStyle(.borderless).help("Письма, поиск, контакты и группы")
             }
             Button { openWindow(id: "mcp-connections") } label: {
                 Label("Connections", systemImage: "puzzlepiece.extension")
@@ -225,6 +231,7 @@ struct StatusHUDView: View {
 }
 
 private struct HeaderModelActionButton: View {
+    var hasConnectedMail = false
     let model: AppModel
     let action: AppModelAction
 
@@ -247,6 +254,7 @@ private struct HeaderModelActionButton: View {
 }
 
 private struct PhaseLabel: View {
+    var hasConnectedMail = false
     let model: AppModel
 
     var body: some View {

@@ -341,6 +341,9 @@ public struct MCPConnectionsView: View {
                 if let snapshot, reading == nil {
                     Spacer()
                     Text("\(snapshot.count) messages").font(.callout).foregroundStyle(.secondary)
+                    if let count = snapshot.bodyCharacterCount {
+                        Text("\(count.formatted()) символов текста").font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("Add to Chat") { useMail(snapshot) }.buttonStyle(.borderedProminent).disabled(snapshot.count == 0)
                 }
             }

@@ -5,6 +5,7 @@ import SwiftUI
 
 struct RootView: View {
     let model: AppModel
+    var hasConnectedMail = false
     @State private var conversationChromeHeight: CGFloat = 0
     @AppStorage("TurboFieldfare.chatSidebarVisible")
     private var isChatSidebarVisible = true
@@ -117,6 +118,7 @@ struct RootView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             StatusHUDView(
+                hasConnectedMail: hasConnectedMail,
                 model: model,
                 isChatSidebarVisible: isChatSidebarVisible,
                 isInspectorVisible: isInspectorVisible,

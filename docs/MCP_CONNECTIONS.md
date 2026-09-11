@@ -221,9 +221,22 @@ messages containing words such as **«почта»**, **«письмо»** or **
 straight to the local model and cannot block an ordinary chat.
 The sent message displays the account, period, folder and loaded-message count.
 Before inference, the app checks whether the new reference text fits with the
-current prompt. If necessary it reduces the included text, marks it as truncated
-for the model and visibly reports that part of the loaded text did not fit.
-The loaded-message count is not a claim that every loaded body was analyzed.
+current prompt. Mail references are not shortened to a prefix: when full loaded
+bodies cannot fit, submission stops and asks for fewer messages or a larger
+context. This prevents a successful-looking analysis containing only headers.
+The summary includes the number of body characters loaded, excluding headers.
+An empty body returned by the server is identified explicitly in the reference.
+
+Follow-up questions such as **«Какие сроки указаны в письме?»** or
+**«Проанализируй содержание этих писем»** use the mail already stored in that
+conversation, without another server call or selection dialog. The complete
+reference is saved as the user message's `contextContent`, including through
+conversation serialization. A new chat does not inherit another chat's selection.
+**«Загрузи письма за вчера»**, **«Обнови почту»**, or a new requested period opens
+a fresh selection. Questions explicitly referring to loaded/selected messages
+retain that selection. Normal history compression still applies in long chats;
+original references remain saved in the transcript, but model context is finite.
+Previously truncated references must be loaded again to recover missing bodies.
 
 **Контакты и группы…** is available both in the selection sheet and the Exchange
 connection. Sender names and addresses are remembered locally in that profile's
@@ -282,15 +295,17 @@ unselected messages are not passed to the model. It follows selected-message
 body continuations. It displays
 progress and supports cancellation. Dates are filtered on Exchange before
 paging; the original last-100-messages search limitation is removed. A local
-import budget of 300,000 characters or 1,000 messages produces an explicit
-incomplete-import notice. Live folder moves/deletions can shift EWS offsets;
+import budget of 300,000 characters or 1,000 messages stops an oversized selected
+import with an error rather than returning bodies cut down to headers. The preview
+can still be incomplete at its separate header limit. Live folder moves/deletions can shift EWS offsets;
 the mailbox is not an immutable snapshot.
 
 Review the loaded text, then choose **Add to Chat**. Mail is added as a reference
 attachment to the selected chat, with a suggested analysis prompt if its draft
 is empty. Generation starts only when the user sends the message. The existing
-context budget may shorten a large attachment, with the existing truncation
-marker; use narrower periods/folders when necessary. Email instructions are
+context budget rejects a mail attachment that cannot fit completely; use fewer
+messages when necessary. Manually attached mail does not trigger a second mailbox
+read when the message is sent. Email instructions are
 treated as quoted reference content. Attachments inside emails are not fetched.
 
 The Exchange connector exposes only `list_messages`, `get_message`,
@@ -420,3 +435,30 @@ This assessment applies to the bundled Exchange connector and its Exchange
 profile policy. A manually substituted executable or a generic local MCP is not
 made read-only by a tool annotation. Normal Exchange account permissions remain
 unchanged; no server-side read-only role is provisioned by this application.
+
+### Local mail workspace
+
+The **Почта** entry appears only while at least one mail MCP (Exchange or SMTP)
+is connected successfully. Saving a profile alone does not enable it. Disconnecting
+the last mail MCP hides the entry and closes the mail window; the local archive is retained.
+Open **Почта** from the main window toolbar or **Settings → Почта — письма,
+контакты и группы…**. Select an Exchange account to manage its contacts and
+named groups. Contacts can be added or updated; the contact context menu offers
+editing and deletion. Groups and exclusions remain scoped to the account.
+
+**Загрузить письма…** connects to the selected account and previews the chosen
+period and folder. Confirm senders and individual messages before body download.
+Successful selected-message downloads now also populate a local archive at
+`~/Library/Application Support/TurboFieldfare/mail-archive.json` (permissions
+0600). Repeated downloads update the same account/message ID. Header previews
+and failed partial downloads do not add body records. Earlier chat attachments
+are not automatically migrated: reload their selection to populate the archive.
+
+Search matches all entered words, case insensitively, across sender name/address,
+subject and full text, with optional account/contact/group filters. It searches
+only downloaded messages, without network requests or model calls. This is an
+in-memory text search over the persisted archive, not a server-wide search.
+Select a result to view/copy its full text; add one message or all matching results
+to the current chat as a Mail attachment for analysis and follow-up questions.
+The existing full-text/context budget checks still apply. Local archive deletion
+leaves server messages and existing chat attachments intact.
