@@ -13,6 +13,43 @@ Use **Overview** in the sidebar to return to the full list.
 **MCP Server** for a custom local connection, or a service preset. Exchange is one
 preset in this list. Its mail/calendar controls appear only within that connection.
 
+## SMTP setup and sending
+
+1. Choose **Add MCP Server → SMTP Mail**.
+2. Enter the SMTP hostname, port, **From address**, username and password.
+   STARTTLS defaults to port 587; implicit TLS normally uses 465. Custom ports
+   are supported. Authentication uses password-based SMTP AUTH;
+   OAuth and NTLM are not implemented for SMTP.
+3. Select a Python 3.9+ executable (the initial path is `/usr/bin/python3`).
+   The bundled SMTP connector uses the standard library; no pip install is needed.
+4. For a corporate CA, choose a certificate file or enter `/etc/ssl/cert.pem`
+   in **Certificate file path** and click **Load File**. Certificates are copied
+   into the profile. Keychain selection works, but the Exchange HTTPS
+   **Find for Server** probe is unavailable for SMTP.
+5. Save and click **Connect & Verify**. This checks TLS, SMTP AUTH and NOOP;
+   it does not send a test message or prove permission to use the From address.
+6. Choose **Compose Email…**, enter plain email addresses separated by commas,
+   a subject and a text body. **Review Email** shows the exact message;
+   **Send Email** submits it. The composer permits one submission per opening.
+
+SMTP sends mail; reading mail and calendar still uses the Exchange preset.
+The chat and generic tool tester cannot send SMTP messages. Passwords stay in
+Keychain and enter only the connector process environment. Custom certificates
+are scoped to the connection and add to Python's default trust through
+`SSLContext.load_verify_locations`. TLS hostname and certificate validation
+remain enabled; STARTTLS failure never falls back to plaintext.
+
+The result distinguishes recipients accepted by the SMTP server from rejected
+recipients. Acceptance is not proof of delivery. No automatic retry is made:
+if submission is interrupted, check with the server before retrying to avoid
+duplicates. SMTP does not automatically save a copy in Exchange Sent Items.
+Attachments, HTML, Cc/Bcc and reading over IMAP/POP3 are not implemented.
+
+Implementation reference: [Python smtplib](https://docs.python.org/3/library/smtplib.html).
+Model-free verification: `python3 Scripts/test-smtp.py` and
+`Scripts/test.sh --filter 'AppMCPTests|MCPConnectionsPresentationTests|AppMCPCertificatesTests'`.
+The SMTP test script uses fake transports and does not send real email.
+
 ## Exchange setup
 
 1. Choose **Add MCP Server → Microsoft Exchange** under **Service Presets**.
@@ -125,7 +162,11 @@ a path starting with `~/` in **Certificate file path** and click **Load File**,
 then **Save & Verify**. Both methods check the contents rather than relying on
 the extension. Files must
 contain only CA or supported self-signed server certificates (no private keys or P12/PFX identities), at most
-128 certificates and 1 MB. Selected public certificates are copied into the
+512 certificates and 1 MB. Comments and textual descriptions outside PEM blocks
+are accepted and discarded. Expired or not-yet-valid entries are skipped with
+a visible count; a file with no currently valid certificates is rejected.
+Private keys and incomplete or unsupported PEM blocks still cause an error.
+Selected public certificates are copied into the
 connection profile, so moving the original file does not break the connection.
 After certificate renewal, select the replacement. Existing manually configured
 PEM paths still work and are validated at connection time.

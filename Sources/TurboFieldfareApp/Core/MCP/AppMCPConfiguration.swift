@@ -1,10 +1,11 @@
 import Foundation
 
 public enum AppMCPKind: String, Codable, CaseIterable, Identifiable, Sendable {
-    case exchange, stdio
+    case exchange, smtp, stdio
     public var id: String { rawValue }
-    public var title: String { self == .exchange ? "Exchange Mail" : "Local MCP Server" }
-    public var symbol: String { self == .exchange ? "envelope" : "puzzlepiece.extension" }
+    public var title: String { self == .smtp ? "SMTP Mail" : (self == .exchange ? "Exchange Mail" : "Local MCP Server") }
+    public var symbol: String { self == .stdio ? "puzzlepiece.extension" : "envelope" }
+    public var isMail: Bool { self != .stdio }
 }
 
 public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
@@ -21,13 +22,18 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
     public var authType = "NTLM"
     public var timezone = "Europe/Moscow"
     public var certificateBundle = ""
+    public var smtpPort: Int?
+    public var smtpSecurity: String?
+    public var effectiveSMTPPort: Int { smtpPort ?? 587 }
+    public var effectiveSMTPSecurity: String { smtpSecurity ?? "STARTTLS" }
     /// Public certificates selected for this connection; no private keys or identities.
     public var selectedCertificates: AppMCPCertificateSelection?
     public var environmentKeys: [String] = []
     public var enabledTools: Set<String> = []
     public init(kind: AppMCPKind = .exchange) {
         self.kind = kind
-        if kind == .stdio { name = "Local MCP Server" }
+        if kind == .smtp { name = "SMTP"; pythonExecutable = "/usr/bin/python3"; enabledTools = ["check_connection"] }
+        else if kind == .stdio { name = "Local MCP Server" }
         else { enabledTools = ["list_messages", "get_message", "list_calendar_events"] }
     }
 
@@ -35,15 +41,22 @@ public struct AppMCPProfile: Codable, Equatable, Identifiable, Sendable {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AppMCPError.configuration("Enter a connection name.")
         }
-        if kind == .exchange {
+        if kind.isMail {
             guard !server.isEmpty, !server.contains("://"), !server.contains("/"),
                   !server.contains(where: \.isWhitespace) else {
-                throw AppMCPError.configuration("Enter the Exchange host, for example mail.company.com, without https:// or a path.")
+                throw AppMCPError.configuration("Enter the mail host, for example mail.company.com, without a URL scheme or a path.")
             }
             guard email.contains("@"), !username.isEmpty else {
                 throw AppMCPError.configuration("Enter your mailbox address and sign-in username.")
             }
-            guard ["NTLM", "BASIC"].contains(authType), TimeZone(identifier: timezone) != nil else {
+            if kind == .smtp {
+                guard (1...65535).contains(effectiveSMTPPort), ["STARTTLS", "TLS"].contains(effectiveSMTPSecurity),
+                      pythonExecutable?.hasPrefix("/") == true,
+                      !server.contains(":"), !server.contains("\0"),
+                      !email.contains(where: { $0.isWhitespace || $0 == "\0" }) else {
+                    throw AppMCPError.configuration("Enter a SMTP hostname, port 1–65535, STARTTLS or TLS, sender address and absolute Python 3 path.")
+                }
+            } else if !["NTLM", "BASIC"].contains(authType) || TimeZone(identifier: timezone) == nil {
                 throw AppMCPError.configuration("Choose a valid authentication method and time zone.")
             }
             if let selectedCertificates {

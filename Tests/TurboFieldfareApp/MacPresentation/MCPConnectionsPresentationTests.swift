@@ -46,6 +46,20 @@ private final class MCPPreviewClient: AppMCPClient {
 @Suite(.serialized)
 @MainActor
 struct MCPConnectionsPresentationTests {
+    @Test func smtpSettingsAndComposerRenderWithoutNetwork() throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("smtp-preview-\(UUID())")
+        let manager = AppMCPManager(store: .init(fileURL: root.appendingPathComponent("profiles.json")), secrets: MCPUIPreviewSecrets())
+        var profile = AppMCPProfile(kind: .smtp)
+        profile.server = "smtp.example.invalid"; profile.email = "sender@example.invalid"; profile.username = "sender"
+        let screenshots = FileManager.default.temporaryDirectory.appendingPathComponent("TurboFieldfare-MCP-previews")
+        try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
+        try renderView(MCPProfileEditor(profile: profile, manager: manager).preferredColorScheme(.light),
+                       size: NSSize(width: 610, height: 690), to: screenshots.appendingPathComponent("smtp-settings.png"))
+        try renderView(SMTPComposeView(profile: profile, manager: manager).preferredColorScheme(.light),
+                       size: NSSize(width: 650, height: 590), to: screenshots.appendingPathComponent("smtp-compose.png"))
+    }
+
     @Test func certificatePickerAndSettingsRenderWithoutReadingKeychain() throws {
         _ = NSApplication.shared
         let file = try #require(Bundle.module.url(forResource: "mcp-corporate-ca", withExtension: "der", subdirectory: "Fixtures"))

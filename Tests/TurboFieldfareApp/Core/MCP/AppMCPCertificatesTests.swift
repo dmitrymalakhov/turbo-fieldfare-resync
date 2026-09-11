@@ -4,6 +4,33 @@ import Testing
 @testable import TurboFieldfareAppCore
 
 struct AppMCPCertificatesTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["TURBOFIELDFARE_TEST_CA_BUNDLE"] != nil))
+    func explicitlySelectedLocalBundleImportsWithoutNetwork() throws {
+        let path = try #require(ProcessInfo.processInfo.environment["TURBOFIELDFARE_TEST_CA_BUNDLE"])
+        let selection = try AppMCPCertificates.readFile(URL(fileURLWithPath: path))
+        #expect(!selection.certificates.isEmpty)
+        try AppMCPCertificates.validate(AppMCPCertificates.inspect(selection))
+    }
+
+    @Test func bundleSkipsDateInvalidRootsAndRejectsAllExpiredFile() throws {
+        let root = try AppMCPCertificate(der: MCPCertificateFixtures.root)
+        let expired = try AppMCPCertificate(der: MCPCertificateFixtures.expired)
+        let future = try AppMCPCertificate(der: MCPCertificateFixtures.future)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("ca-bundle-\(UUID()).pem")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data((root.pem + expired.pem + future.pem).utf8).write(to: file)
+        let selection = try AppMCPCertificates.readFile(file)
+        #expect(selection.certificates == [root.der])
+        #expect(selection.skippedDateInvalidCount == 2)
+        #expect(try JSONDecoder().decode(AppMCPCertificateSelection.self, from: JSONEncoder().encode(selection)) == selection)
+        try Data(expired.pem.utf8).write(to: file)
+        #expect(throws: (any Error).self) { try AppMCPCertificates.readFile(file) }
+        #expect(try AppMCPCertificates.decode(Data(String(repeating: root.pem, count: 129).utf8)).count == 129)
+        #expect(throws: (any Error).self) {
+            try AppMCPCertificates.decode(Data(String(repeating: root.pem, count: 513).utf8))
+        }
+    }
+
     @Test func certificateParsingPreservesIdentityAndRejectsExpiredFutureAndOrdinaryLeafCertificates() throws {
         let root = try AppMCPCertificate(der: MCPCertificateFixtures.root)
         #expect(root.name == "Example Corporate CA root")
@@ -31,7 +58,9 @@ struct AppMCPCertificatesTests {
     @Test func importRejectsPrivateKeysMalformedPEMAndOversizedFiles() throws {
         let root = try AppMCPCertificate(der: MCPCertificateFixtures.root)
         let malformed = ["", "not a certificate", root.pem + "-----BEGIN PRIVATE KEY-----\nYWJj\n-----END PRIVATE KEY-----",
-                         root.pem + "-----BEGIN CERTIFICATE-----\ninvalid", root.pem + "unexpected data"]
+                         root.pem + "-----BEGIN CERTIFICATE-----\ninvalid",
+                         "# comment\n" + root.pem + "-----BEGIN RSA PRIVATE KEY-----\nYWJj\n-----END RSA PRIVATE KEY-----",
+                         root.pem + "-----END CERTIFICATE-----"]
         for text in malformed {
             #expect(throws: (any Error).self) { try AppMCPCertificates.decode(Data(text.utf8)) }
         }
@@ -41,6 +70,22 @@ struct AppMCPCertificatesTests {
         #expect(throws: (any Error).self) {
             try AppMCPCertificates.inspect(.init(certificates: [], source: "invalid"))
         }
+    }
+
+    @Test func systemPEMDescriptionsAreIgnoredAndNeverPersisted() throws {
+        let root = try AppMCPCertificate(der: MCPCertificateFixtures.root)
+        let text = "# OpenBSD CA bundle\n=== /CN=Example CA\nCertificate:\n    Data:\n        Version: 3 (0x2)\n"
+        let data = Data((text + root.pem + "\n# Another certificate\n" + root.pem + "\nEnd of bundle\n").utf8)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pem-descriptions-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("cert.pem")
+        try data.write(to: file)
+        var profile = AppMCPProfile()
+        profile.selectedCertificates = try AppMCPCertificates.readFile(file)
+        #expect(profile.selectedCertificates?.certificates == [root.der, root.der])
+        let prepared = try #require(try AppMCPCertificates.prepare(profile: profile, directory: directory))
+        #expect(try String(contentsOf: prepared, encoding: .utf8) == root.pem + root.pem)
     }
 
     @Test func selectedCertificatesAreCopiedAndScopedPerConnectionWithLegacyFileSupport() throws {

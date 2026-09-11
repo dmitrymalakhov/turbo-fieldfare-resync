@@ -84,6 +84,48 @@ private final class MCPLargeContextProvider: AppPromptContextProviding {
 @Suite(.serialized)
 @MainActor
 struct AppMCPTests {
+    @Test func smtpProfileRoundTripsAndRejectsUnsafeTransport() throws {
+        var value = AppMCPProfile(kind: .smtp)
+        value.server = "smtp.example.invalid"; value.email = "sender@example.invalid"; value.username = "sender"
+        try value.validate()
+        let decoded = try JSONDecoder().decode(AppMCPProfile.self, from: JSONEncoder().encode(value))
+        #expect(decoded == value)
+        #expect(decoded.effectiveSMTPPort == 587)
+        #expect(decoded.effectiveSMTPSecurity == "STARTTLS")
+        value.smtpSecurity = "NONE"
+        #expect(throws: AppMCPError.self) { try value.validate() }
+        value.smtpSecurity = "TLS"; value.smtpPort = 0
+        #expect(throws: AppMCPError.self) { try value.validate() }
+    }
+
+    @Test func smtpVerificationDoesNotSendAndGenericToolsCannotSend() async throws {
+        let store = try temporaryStore(), secrets = MCPTestSecrets(), client = MCPTestClient()
+        defer { try? FileManager.default.removeItem(at: store.fileURL.deletingLastPathComponent()) }
+        let manager = AppMCPManager(store: store, secrets: secrets, factory: { client })
+        var value = AppMCPProfile(kind: .smtp)
+        value.server = "smtp.example.invalid"; value.email = "sender@example.invalid"; value.username = "login"
+        value.smtpPort = 465; value.smtpSecurity = "TLS"
+        try manager.save(value, credentials: .init(password: "smtp-secret"))
+        try await manager.ensureConnected(value.id)
+        #expect(client.environment["SMTP_PORT"] == "465")
+        #expect(client.environment["SMTP_FROM"] == "sender@example.invalid")
+        #expect(client.environment["SMTP_PASSWORD"] == "smtp-secret")
+        #expect(manager.tools[value.id]?.map(\.name) == ["check_connection"])
+        #expect(!client.calls.contains { $0.0 == "smtp/send" })
+        await #expect(throws: AppMCPError.self) {
+            try await manager.callRaw(value.id, tool: "send_email", arguments: .object([:]))
+        }
+        client.toolReply = .object(["structuredContent": .object(["accepted": .array([.string("to@example.invalid")]), "rejected": .object([:])])])
+        var stale = value; stale.email = "another@example.invalid"
+        await #expect(throws: AppMCPError.self) {
+            try await manager.sendSMTP(stale, to: ["to@example.invalid"], subject: "Reviewed", body: "Exact body")
+        }
+        _ = try await manager.sendSMTP(value, to: ["to@example.invalid"], subject: "Reviewed", body: "Exact body")
+        #expect(client.calls.last?.0 == "smtp/send")
+        #expect(client.calls.last?.1["body"]?.stringValue == "Exact body")
+        manager.stopAll()
+    }
+
     private func temporaryStore() throws -> AppMCPProfileStore {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-tests-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

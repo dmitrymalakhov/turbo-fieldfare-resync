@@ -10,6 +10,7 @@ public struct MCPConnectionsView: View {
     @State private var editing: AppMCPProfile?
     @State private var editingCertificates: AppMCPProfile?
     @State private var testing: AppMCPProfile?
+    @State private var composing: AppMCPProfile?
     @State private var removing: AppMCPProfile?
     @State private var period = "today"
     @State private var folder = "Inbox"
@@ -44,6 +45,9 @@ public struct MCPConnectionsView: View {
         }
         .sheet(item: $testing) { profile in
             MCPConnectionTestView(manager: manager, profileID: profile.id)
+        }
+        .sheet(item: $composing) { profile in
+            SMTPComposeView(profile: profile, manager: manager)
         }
         .sheet(isPresented: $addingConnection) {
             MCPNewConnectionView(manager: manager) { saved in selection = saved }
@@ -142,7 +146,7 @@ public struct MCPConnectionsView: View {
                         .frame(width: 56, height: 56).background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 14))
                     VStack(alignment: .leading, spacing: 5) {
                         Text(profile.name).font(.title.weight(.semibold))
-                        Text(profile.kind == .exchange ? profile.email : profile.kind.title).foregroundStyle(.secondary)
+                        Text(profile.kind.isMail ? profile.email : profile.kind.title).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button(role: .destructive) { removing = profile } label: {
@@ -177,13 +181,13 @@ public struct MCPConnectionsView: View {
                         } else {
                             Button("Connect & Verify") { manager.connect(profile.id) }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(profile.executable.isEmpty)
+                                .disabled(profile.kind != .smtp && profile.executable.isEmpty)
                         }
                     }
                     if case .failed(let message) = manager.status(profile.id) {
                         Text(message.components(separatedBy: "\n").first ?? message)
                             .font(.callout).foregroundStyle(.red).textSelection(.enabled)
-                        if profile.kind == .exchange, message.localizedCaseInsensitiveContains("certificate") {
+                        if profile.kind.isMail, message.localizedCaseInsensitiveContains("certificate") {
                             Button("Choose Certificates…") { editingCertificates = profile }
                         }
                     }
@@ -201,7 +205,7 @@ public struct MCPConnectionsView: View {
                     card { MCPDiagnosticsView(report: report) }
                 }
 
-                if profile.kind == .exchange {
+                if profile.kind.isMail {
                     card {
                         sectionTitle("Certificates", symbol: "checkmark.shield")
                         Text(profile.selectedCertificates.map { "\($0.certificates.count) certificate(s) · \($0.source)" }
@@ -210,12 +214,17 @@ public struct MCPConnectionsView: View {
                         Button("Choose Certificates…") { editingCertificates = profile }
                             .disabled(manager.status(profile.id).isBusy)
                     }
-                    card { MCPPythonSetupView(manager: manager, profile: profile).id(profile.id) }
+                    if profile.kind == .exchange { card { MCPPythonSetupView(manager: manager, profile: profile).id(profile.id) } }
                 }
 
                 card {
                     sectionTitle("Connection & Authentication", symbol: "key.horizontal")
-                    if profile.kind == .exchange {
+                    if profile.kind == .smtp {
+                        LabeledContent("Server", value: "\(profile.server):\(profile.effectiveSMTPPort)")
+                        LabeledContent("Security", value: profile.effectiveSMTPSecurity)
+                        LabeledContent("Username", value: profile.username)
+                        LabeledContent("From", value: profile.email)
+                    } else if profile.kind == .exchange {
                         LabeledContent("Server", value: profile.server)
                         LabeledContent("Username", value: profile.username)
                         LabeledContent("Method", value: profile.authType)
@@ -229,6 +238,15 @@ public struct MCPConnectionsView: View {
 
                 toolsCard(profile)
                 if profile.kind == .exchange { mailCard(profile) }
+                if profile.kind == .smtp {
+                    card {
+                        sectionTitle("Send Mail", symbol: "paperplane")
+                        Text("Compose a text email and review it before sending. SMTP does not read your inbox.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button("Compose Email…") { composing = profile }
+                            .disabled(manager.status(profile.id) != .connected)
+                    }
+                }
             }
             .padding(28).frame(maxWidth: 780, alignment: .leading).frame(maxWidth: .infinity)
         }
@@ -363,8 +381,8 @@ struct MCPProfileEditor: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(profile.kind == .exchange ? "Connect Exchange" : "Local MCP Server").font(.title2.weight(.semibold))
-                    Text(profile.kind == .exchange ? "Read mail with your corporate account." : "Run a local MCP executable with its own credentials.")
+                    Text(profile.kind == .smtp ? "Connect SMTP" : (profile.kind == .exchange ? "Connect Exchange" : "Local MCP Server")).font(.title2.weight(.semibold))
+                    Text(profile.kind == .smtp ? "Send mail through your SMTP server." : (profile.kind == .exchange ? "Read mail with your corporate account." : "Run a local MCP executable with its own credentials."))
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -373,9 +391,21 @@ struct MCPProfileEditor: View {
             Form {
                 Section("Connection") {
                     TextField("Name", text: $profile.name)
-                    if profile.kind == .exchange {
-                        TextField("Exchange host", text: $profile.server, prompt: Text("mail.company.com"))
-                        TextField("Mailbox", text: $profile.email, prompt: Text("you@company.com"))
+                    if profile.kind.isMail {
+                        TextField(profile.kind == .smtp ? "SMTP host" : "Exchange host", text: $profile.server, prompt: Text("mail.company.com"))
+                        TextField(profile.kind == .smtp ? "From address" : "Mailbox", text: $profile.email, prompt: Text("you@company.com"))
+                        if profile.kind == .smtp {
+                            TextField("Port", value: Binding(get: { profile.effectiveSMTPPort }, set: { profile.smtpPort = $0 }), format: .number.grouping(.never))
+                            Picker("Security", selection: Binding(get: { profile.effectiveSMTPSecurity }, set: {
+                                profile.smtpSecurity = $0
+                                if [465, 587].contains(profile.effectiveSMTPPort) { profile.smtpPort = $0 == "TLS" ? 465 : 587 }
+                            })) { Text("STARTTLS (usually 587)").tag("STARTTLS"); Text("TLS (usually 465)").tag("TLS") }
+                            HStack {
+                                TextField("Python 3 executable", text: Binding(get: { profile.pythonExecutable ?? "" }, set: { profile.pythonExecutable = $0 }))
+                                Button("Choose…") { chooseFile { profile.pythonExecutable = $0 } }
+                            }
+                            Text("Uses Python 3.9 or newer. No connector packages need to be installed.").font(.caption).foregroundStyle(.secondary)
+                        }
                     } else {
                         HStack { TextField("Executable", text: $profile.executable)
                             Button("Choose…") { chooseFile { profile.executable = $0 } } }
@@ -388,10 +418,12 @@ struct MCPProfileEditor: View {
                     }
                 }
                 Section("Authentication") {
-                    if profile.kind == .exchange {
+                    if profile.kind.isMail {
                         TextField("Username", text: $profile.username, prompt: Text("DOMAIN\\username"))
                         SecureField("Password", text: $credentials.password)
-                        Picker("Method", selection: $profile.authType) { Text("NTLM").tag("NTLM"); Text("Basic over TLS").tag("BASIC") }
+                        if profile.kind == .exchange {
+                            Picker("Method", selection: $profile.authType) { Text("NTLM").tag("NTLM"); Text("Basic over TLS").tag("BASIC") }
+                        }
                     } else {
                         ForEach($variables) { $variable in
                             HStack {
@@ -406,8 +438,10 @@ struct MCPProfileEditor: View {
                     Label("Secrets are saved in this Mac’s Keychain.", systemImage: "lock")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if profile.kind == .exchange {
+                if profile.kind.isMail {
                     Section("Certificates") { MCPCertificateSettingsView(profile: $profile) }
+                }
+                if profile.kind == .exchange {
                     Section("Mail preferences") {
                         TextField("Time zone", text: $profile.timezone)
                         Text("Today, yesterday and week boundaries use this time zone. Weeks start on Monday.")

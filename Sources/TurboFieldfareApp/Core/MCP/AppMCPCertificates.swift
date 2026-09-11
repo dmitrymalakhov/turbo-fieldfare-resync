@@ -3,9 +3,11 @@ import Foundation
 public struct AppMCPCertificateSelection: Codable, Equatable, Sendable {
     public let certificates: [Data]
     public let source: String
+    public let skippedDateInvalidCount: Int?
 
-    public init(certificates: [Data], source: String) {
+    public init(certificates: [Data], source: String, skippedDateInvalidCount: Int? = nil) {
         self.certificates = certificates; self.source = source
+        self.skippedDateInvalidCount = skippedDateInvalidCount
     }
 }
 
@@ -81,6 +83,7 @@ public struct AppMCPCertificate: Identifiable, Equatable, Sendable {
 /// network requests or SecTrust evaluation (which can fetch issuers/OCSP).
 public enum AppMCPCertificates {
     static let maximumFileSize = 1_048_576
+    static let maximumCertificateCount = 512
 
     public static func inKeychain() throws -> [AppMCPCertificate] {
         var result: CFTypeRef?
@@ -121,9 +124,18 @@ public enum AppMCPCertificates {
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         let data = try file.read(upToCount: maximumFileSize + 1) ?? Data()
-        let certificates = try decode(data)
+        let decoded = try decode(data)
+        let now = Date()
+        // A CA bundle can retain obsolete roots unrelated to the server's chain.
+        // Exclude date-invalid entries; never grant them trust or reject healthy roots.
+        let certificates = decoded.filter { $0.notBefore <= now && now <= $0.notAfter }
+        guard !certificates.isEmpty else {
+            throw AppMCPError.configuration("The file contains no currently valid certificates. All certificates are expired or not valid yet.")
+        }
         try validate(certificates)
-        return .init(certificates: certificates.map(\.der), source: url.lastPathComponent)
+        let skipped = decoded.count - certificates.count
+        return .init(certificates: certificates.map(\.der), source: url.lastPathComponent,
+                     skippedDateInvalidCount: skipped == 0 ? nil : skipped)
     }
 
     static func decode(_ data: Data) throws -> [AppMCPCertificate] {
@@ -139,9 +151,17 @@ public enum AppMCPCertificates {
         let range = NSRange(text.startIndex..., in: text)
         let matches = expression.matches(in: text, range: range)
         let remainder = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
-        guard !matches.isEmpty, matches.count <= 128,
-              remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AppMCPError.configuration("Choose a PEM containing only certificates. Private keys, identities and other PEM blocks are not accepted.")
+        // System/OpenSSL bundles contain comments and human-readable certificate
+        // descriptions outside PEM blocks. Import only the DER certificates.
+        // Unmatched boundaries still reject private keys and damaged blocks.
+        if remainder.contains("-----BEGIN") || remainder.contains("-----END") {
+            throw AppMCPError.configuration("The PEM contains an unsupported or incomplete block. Choose CERTIFICATE blocks without private keys or identities.")
+        }
+        guard !matches.isEmpty else {
+            throw AppMCPError.configuration("No complete CERTIFICATE blocks were found in the PEM file.")
+        }
+        guard matches.count <= maximumCertificateCount else {
+            throw AppMCPError.configuration("The PEM contains more than \(maximumCertificateCount) certificates. Choose a smaller CA bundle.")
         }
         return try matches.map { match in
             let body = String(text[Range(match.range(at: 1), in: text)!]).filter { !$0.isWhitespace }
@@ -151,9 +171,9 @@ public enum AppMCPCertificates {
     }
 
     public static func inspect(_ selection: AppMCPCertificateSelection) throws -> [AppMCPCertificate] {
-        guard !selection.certificates.isEmpty, selection.certificates.count <= 128,
+        guard !selection.certificates.isEmpty, selection.certificates.count <= maximumCertificateCount,
               selection.certificates.reduce(0, { $0 + $1.count }) <= maximumFileSize else {
-            throw AppMCPError.configuration("Choose between 1 and 128 certificates, at most 1 MB in total.")
+            throw AppMCPError.configuration("Choose between 1 and \(maximumCertificateCount) certificates, at most 1 MB in total.")
         }
         return try selection.certificates.map { try AppMCPCertificate(der: $0) }
     }

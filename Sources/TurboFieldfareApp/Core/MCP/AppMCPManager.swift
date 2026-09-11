@@ -30,6 +30,7 @@ public final class AppMCPManager {
     private var installers: [UUID: AppMCPExchangeInstaller] = [:]
     private var readableStore = true
     private var mailReads: [UUID: UUID] = [:]
+    private var smtpSends = Set<UUID>()
     public static let exchangeTools: Set<String> = ["list_messages", "get_message", "list_calendar_events"]
 
     public init(store: AppMCPProfileStore, secrets: any AppMCPSecretStoring,
@@ -47,7 +48,7 @@ public final class AppMCPManager {
     public func credentials(_ id: UUID) throws -> AppMCPCredentials { try secrets.read(id: id) }
 
     public func setCertificates(_ selection: AppMCPCertificateSelection?, for id: UUID) throws {
-        guard readableStore, let index = profiles.firstIndex(where: { $0.id == id && $0.kind == .exchange }) else {
+        guard readableStore, let index = profiles.firstIndex(where: { $0.id == id && $0.kind.isMail }) else {
             throw AppMCPError.configuration("The saved connection is unavailable.")
         }
         if let selection { try AppMCPCertificates.validate(AppMCPCertificates.inspect(selection)) }
@@ -200,6 +201,25 @@ public final class AppMCPManager {
                 sensitiveValues = [credentials.password] + Array(credentials.environment.values)
                 report.redact(sensitiveValues)
                 var environment = credentials.environment.filter { profile.environmentKeys.contains($0.key) }
+                var executable = profile.executable
+                var arguments = profile.kind == .exchange ? [] : profile.arguments
+                if profile.kind == .smtp {
+                    guard !credentials.password.isEmpty else { throw AppMCPError.configuration("Enter your SMTP password in Authentication.") }
+                    guard let script = Bundle.module.url(forResource: "server", withExtension: "py", subdirectory: "SMTPMCP") else {
+                        throw AppMCPError.configuration("The bundled SMTP connector is missing. Rebuild the application.")
+                    }
+                    executable = profile.pythonExecutable ?? ""
+                    arguments = ["-I", "-u", script.path]
+                    environment = ["SMTP_HOST": profile.server, "SMTP_PORT": String(profile.effectiveSMTPPort),
+                                   "SMTP_SECURITY": profile.effectiveSMTPSecurity, "SMTP_FROM": profile.email,
+                                   "SMTP_USERNAME": profile.username, "SMTP_PASSWORD": credentials.password]
+                    report.begin("Prepare SMTP TLS certificates")
+                    if let bundle = try AppMCPCertificates.prepare(profile: profile,
+                        directory: store.fileURL.deletingLastPathComponent().appendingPathComponent("MCP/Certificates")) {
+                        environment["SMTP_CA_BUNDLE"] = bundle.path
+                    }
+                    report.complete("TLS and hostname verification enabled. SMTP verification does not send a message.")
+                }
                 if profile.kind == .exchange {
                     guard !credentials.password.isEmpty else { throw AppMCPError.configuration("Enter your Exchange password in Authentication.") }
                     environment = ["EXCHANGE_EMAIL": profile.email, "EXCHANGE_USERNAME": profile.username,
@@ -228,7 +248,7 @@ public final class AppMCPManager {
                     self.sessions[id] = nil; self.statuses[id] = .failed(message)
                 }
                 report.begin("Start MCP server")
-                try await client.start(executable: profile.executable, arguments: profile.kind == .exchange ? [] : profile.arguments,
+                try await client.start(executable: executable, arguments: arguments,
                                        directory: profile.workingDirectory, environment: environment)
                 try Task.checkCancellation()
                 report.begin("Discover MCP tools")
@@ -248,28 +268,28 @@ public final class AppMCPManager {
                     cursor = result["nextCursor"]?.stringValue
                     if let cursor, !cursors.insert(cursor).inserted || cursors.count > 100 { throw AppMCPError.protocolError }
                 } while cursor != nil
-                if profile.kind == .exchange {
+                if profile.kind.isMail {
                     guard discovered.contains(where: { $0.name == "check_connection" }) else {
-                        throw AppMCPError.configuration("Install the bundled Exchange connector to verify authentication and use read-only mail tools.")
+                        throw AppMCPError.configuration("The mail connector must provide check_connection to verify authentication.")
                     }
                     statuses[id] = .authenticating
                     report.complete("Found \(discovered.count) tools.")
-                    report.begin("Verify Exchange sign-in and Inbox access")
+                    report.begin(profile.kind == .smtp ? "Verify SMTP TLS and sign-in (no mail sent)" : "Verify Exchange sign-in and Inbox access")
                     let check = try await client.request("tools/call", params: .object([
                         "name": .string("check_connection"), "arguments": .object([:])]))
                     if check["isError"]?.boolValue == true {
                         let message = check["content"]?.arrayValue?.compactMap { $0["text"]?.stringValue }.joined(separator: "\n") ?? ""
-                        throw AppMCPDiagnosticText.failure("Exchange mailbox verification failed.",
+                        throw AppMCPDiagnosticText.failure("Mail connection verification failed.",
                                                            details: message, secrets: sensitiveValues)
                     }
                     guard try Self.toolResult(check)["authenticated"]?.boolValue == true else { throw AppMCPError.serverRejected }
-                    discovered.removeAll { !Self.exchangeTools.contains($0.name) }
+                    discovered.removeAll { profile.kind == .smtp ? $0.name != "check_connection" : !Self.exchangeTools.contains($0.name) }
                 }
                 try Task.checkCancellation()
                 guard generations[id] == generation, sessions[id] === client else { client.stop(); return }
                 tools[id] = discovered
-                report.complete(profile.kind == .exchange ? "Authentication and read-only Inbox access verified."
-                                                           : "Found \(discovered.count) tools.")
+                report.complete(profile.kind == .smtp ? "SMTP TLS and authentication verified. No message was sent."
+                    : (profile.kind == .exchange ? "Authentication and read-only Inbox access verified." : "Found \(discovered.count) tools."))
                 lastChecked[id] = Date(); statuses[id] = .connected
             } catch {
                 client.stop()
@@ -327,6 +347,7 @@ public final class AppMCPManager {
         guard arguments.objectValue != nil else { throw AppMCPError.configuration("Tool arguments must be a JSON object.") }
         guard let profile = profiles.first(where: { $0.id == id }), profile.enabledTools.contains(tool),
               tools[id]?.contains(where: { $0.name == tool }) == true,
+              profile.kind != .smtp || tool == "check_connection",
               profile.kind != .exchange || Self.exchangeTools.contains(tool) else {
             throw AppMCPError.configuration("This tool is disabled for the connection.")
         }
@@ -337,6 +358,29 @@ public final class AppMCPManager {
         guard result.objectValue != nil,
               result["structuredContent"] != nil || result["content"]?.arrayValue != nil else { throw AppMCPError.protocolError }
         return result
+    }
+
+    /// Called only by the manual composer after the user reviews the exact message.
+    /// Sending is not exposed through the generic tool dispatcher or chat context.
+    public func sendSMTP(_ reviewedProfile: AppMCPProfile, to: [String], subject: String, body: String) async throws -> AppMCPValue {
+        let id = reviewedProfile.id
+        guard reviewedProfile.kind == .smtp, profiles.contains(reviewedProfile) else {
+            throw AppMCPError.configuration("The SMTP settings changed. Close the composer and review the message again.")
+        }
+        guard
+              status(id) == .connected, let client = sessions[id] else { throw AppMCPError.disconnected }
+        guard smtpSends.insert(id).inserted else { throw AppMCPError.configuration("A message is already being submitted.") }
+        defer { smtpSends.remove(id) }
+        let response = try await client.request("smtp/send", params: .object([
+            "to": .array(to.map { .string($0) }), "subject": .string(subject), "body": .string(body)]))
+        guard sessions[id] === client else {
+            throw AppMCPError.configuration("The connection changed during submission. Check the mail server before retrying.")
+        }
+        if response["isError"]?.boolValue == true {
+            let message = response["content"]?.arrayValue?.compactMap { $0["text"]?.stringValue }.joined(separator: "\n") ?? "SMTP submission failed."
+            throw AppMCPError.configuration(message)
+        }
+        return try Self.toolResult(response)
     }
     static func toolResult(_ result: AppMCPValue) throws -> AppMCPValue {
         guard result["isError"]?.boolValue != true else { throw AppMCPError.serverRejected }

@@ -130,7 +130,7 @@ struct MCPOverviewView: View {
                 Spacer()
                 if manager.status(profile.id).isBusy || manager.status(profile.id) == .connected {
                     Button(manager.status(profile.id).isBusy ? "Cancel" : "Disconnect") { manager.disconnect(profile.id) }
-                } else if profile.executable.isEmpty {
+                } else if profile.kind != .smtp && profile.executable.isEmpty {
                     Button("Set Up…") { openConnection(profile.id) }
                 } else {
                     Button("Connect") { manager.connect(profile.id) }
@@ -189,6 +189,8 @@ struct MCPConnectionPicker: View {
                     Text("SERVICE PRESETS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     option(.exchange, title: "Microsoft Exchange", badge: "Preset",
                            description: "Use the included connector for read-only access to corporate mail and calendar.")
+                    option(.smtp, title: "SMTP Mail", badge: "Send",
+                           description: "Send text emails with STARTTLS or TLS and your corporate certificates.")
                 }
                 Label("Each server has its own connection settings, credentials and tool controls.", systemImage: "slider.horizontal.3")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

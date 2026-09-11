@@ -70,6 +70,7 @@ let package = Package(
             resources: [
                 .copy("Resources/app-prompts.json"),
                 .copy("Resources/ExchangeMCP"),
+                .copy("Resources/SMTPMCP"),
             ]
         ),
         .target(

@@ -14,6 +14,10 @@ struct MCPCertificateSettingsView: View {
             if let selection = profile.selectedCertificates {
                 Label("\(selection.certificates.count) certificate(s) · \(selection.source)", systemImage: "checkmark.shield")
                     .fontWeight(.medium)
+                if let skipped = selection.skippedDateInvalidCount, skipped > 0 {
+                    Text("Skipped \(skipped) expired or not-yet-valid certificate(s) from the file. Only currently valid certificates were imported.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if let certificates = try? AppMCPCertificates.inspect(selection) {
                     ForEach(certificates) { certificate in
                         VStack(alignment: .leading, spacing: 3) {
@@ -56,12 +60,12 @@ struct MCPCertificateSettingsView: View {
             if profile.selectedCertificates != nil || !profile.certificateBundle.isEmpty {
                 Button("Use Default Certificates") { select(nil) }.buttonStyle(.link)
             }
-            Text("The selected certificates are trusted only for this Exchange connection. TLS checks stay enabled. Keychain trust settings are unchanged.")
+            Text("The selected certificates are trusted only for this mail connection. TLS checks stay enabled. Keychain trust settings are unchanged.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
         }
         .sheet(isPresented: $choosingKeychain) {
-            MCPKeychainCertificatePicker(host: profile.server) { select($0) }
+            MCPKeychainCertificatePicker(host: profile.kind == .smtp ? "" : profile.server) { select($0) }
         }
     }
 
@@ -83,7 +87,7 @@ struct MCPCertificateSettingsView: View {
 
     private func chooseFile() {
         let panel = NSOpenPanel()
-        panel.title = "Choose Exchange certificates"
+        panel.title = "Choose mail certificates"
         panel.message = "Choose a CA bundle or self-signed server certificate (PEM, CER, CRT or DER). Private keys and P12/PFX identities are not needed."
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = ["pem", "cer", "crt", "der"].compactMap { UTType(filenameExtension: $0) }
@@ -100,7 +104,7 @@ struct MCPCertificateEditor: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Exchange Certificates").font(.title2.weight(.semibold))
+            Text(profile.kind == .smtp ? "SMTP Certificates" : "Exchange Certificates").font(.title2.weight(.semibold))
             Text(profile.name + " · " + profile.server).foregroundStyle(.secondary)
             ScrollView { MCPCertificateSettingsView(profile: $profile).frame(maxWidth: .infinity, alignment: .leading) }
             if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
@@ -180,7 +184,7 @@ struct MCPKeychainCertificatePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose Exchange Certificates").font(.title2.weight(.semibold))
+            Text("Choose Mail Certificates").font(.title2.weight(.semibold))
             Text("All public certificates are shown, including self-signed certificates. Find a matching chain for your Exchange server to narrow the list.")
                 .foregroundStyle(.secondary)
             serverLookup
