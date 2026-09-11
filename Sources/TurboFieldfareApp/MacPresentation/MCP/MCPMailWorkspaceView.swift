@@ -3,6 +3,9 @@ import TurboFieldfareAppCore
 
 public struct MCPMailWorkspaceView: View {
     let manager: AppMCPManager
+    let attachmentMode: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var attachmentIDs = Set<String>()
     let useMail: (String) -> Void
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
@@ -17,8 +20,8 @@ public struct MCPMailWorkspaceView: View {
     @State private var loadTask: Task<Void, Never>?
     @State private var period = "today"
     @State private var folder = "Inbox"
-    public init(manager: AppMCPManager, useMail: @escaping (String) -> Void) {
-        self.manager = manager; self.useMail = useMail
+    public init(manager: AppMCPManager, attachmentMode: Bool = false, useMail: @escaping (String) -> Void) {
+        self.manager = manager; self.useMail = useMail; self.attachmentMode = attachmentMode
         _selected = State(initialValue: manager.mailArchive.messages.first?.id)
     }
     private var profiles: [AppMCPProfile] { manager.profiles.filter { $0.kind == .exchange } }
@@ -33,6 +36,7 @@ public struct MCPMailWorkspaceView: View {
             HStack {
                 Label("Почта", systemImage: "envelope").font(.title2.bold())
                 Spacer()
+                if attachmentMode { Button("Отмена") { dismiss() } }
                 Button("Подключения…") { openWindow(id: "mcp-connections") }
                 Button(loading ? "Загрузка…" : "Загрузить письма…") { loadPreview() }.disabled(account == nil || loading)
                 Button("Контакты и группы…") { editingContacts = true }.disabled(account == nil)
@@ -60,15 +64,31 @@ public struct MCPMailWorkspaceView: View {
             HStack {
                 Text("Найдено: \(results.count) · В архиве: \(manager.mailArchive.messages.count)").foregroundStyle(.secondary)
                 Spacer()
-                Button("В чат найденные (\(results.count))") { attach(results) }.disabled(results.isEmpty)
+                Button(attachmentMode ? "Приложить найденные (\(results.count))" : "В чат найденные (\(results.count))") { attach(results) }.disabled(results.isEmpty)
+            }
+            if attachmentMode {
+                HStack {
+                    Text("Отметьте письма или приложите все результаты поиска. Затем напишите промпт в диалоге.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Приложить выбранные (\(results.filter { attachmentIDs.contains($0.id) }.count))") {
+                        attach(results.filter { attachmentIDs.contains($0.id) })
+                    }.disabled(!results.contains { attachmentIDs.contains($0.id) })
+                }
             }
             if let message = error ?? manager.mailArchive.error { Text(message).foregroundStyle(.red) }
             HSplitView {
                 List(results, selection: $selected) { mail in
+                    HStack {
+                    if attachmentMode {
+                        Toggle("Выбрать письмо", isOn: Binding(get: { attachmentIDs.contains(mail.id) }, set: {
+                            if $0 { attachmentIDs.insert(mail.id) } else { attachmentIDs.remove(mail.id) }
+                        })).labelsHidden().toggleStyle(.checkbox)
+                    }
                     VStack(alignment: .leading, spacing: 4) {
                         Text(mail.header.subject).fontWeight(.medium).lineLimit(2)
                         Text(mail.header.senderName.isEmpty ? mail.header.sender : mail.header.senderName).lineLimit(1)
                         Text(mail.header.date).font(.caption).foregroundStyle(.secondary)
+                    }
                     }.padding(.vertical, 4).tag(mail.id)
                 }.frame(minWidth: 270, idealWidth: 330)
                 if let mail = results.first(where: { $0.id == selected }) {
@@ -77,7 +97,7 @@ public struct MCPMailWorkspaceView: View {
                         Text("\(mail.header.senderName) <\(mail.header.sender)>").textSelection(.enabled)
                         Text("\(mail.header.date) · \(mail.folder)").foregroundStyle(.secondary)
                         HStack {
-                            Button("Добавить в чат") { attach([mail]) }
+                            Button(attachmentMode ? "Приложить письмо" : "Добавить в чат") { attach([mail]) }
                             Spacer()
                             Button("Удалить из архива", role: .destructive) {
                                 do { try manager.mailArchive.remove(ids: [mail.id]); selected = nil }
@@ -99,9 +119,9 @@ public struct MCPMailWorkspaceView: View {
         }.padding(20).frame(minWidth: 900, minHeight: 620)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: manager.hasConnectedMail) { _, connected in
-            if !connected { loadTask?.cancel(); dismissWindow(id: "mail") }
+            if !connected { loadTask?.cancel(); if attachmentMode { dismiss() } else { dismissWindow(id: "mail") } }
         }
-        .onAppear { if !manager.hasConnectedMail { dismissWindow(id: "mail") }; if account == nil, profiles.count == 1 { account = profiles.first?.id }; selected = results.first?.id }
+        .onAppear { if !manager.hasConnectedMail { if attachmentMode { dismiss() } else { dismissWindow(id: "mail") } }; if account == nil, profiles.count == 1 { account = profiles.first?.id }; selected = results.first?.id }
         .onChange(of: account) { _, _ in sender = ""; selected = nil }
         .onChange(of: results.map(\.id)) { _, ids in if selected == nil || !ids.contains(selected!) { selected = ids.first } }
         .onDisappear { loadTask?.cancel() }

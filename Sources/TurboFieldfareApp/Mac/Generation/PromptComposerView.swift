@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 
 struct PromptComposerView: View {
     @Bindable var model: AppModel
+    @Environment(AppMCPManager.self) private var mcpManager: AppMCPManager?
+    @State private var showingMailPicker = false
+    @State private var mailChatID: UUID?
     @FocusState private var promptFocused: Bool
     @State private var showingPromptTips = false
     @State private var showingAttachmentPicker = false
@@ -60,6 +63,22 @@ struct PromptComposerView: View {
             guard model.canEditSelectedChat, !urls.isEmpty else { return false }
             importDocuments(urls)
             return true
+        }
+        .sheet(isPresented: $showingMailPicker) {
+            if let mcpManager, mcpManager.hasConnectedMail {
+                MCPMailWorkspaceView(manager: mcpManager, attachmentMode: true) { text in
+                    guard model.canEditSelectedChat, model.selectedChatID == mailChatID else {
+                        documentImportError = "Диалог изменился. Откройте выбор писем заново."; showingMailPicker = false; return
+                    }
+                    model.addPromptAttachment(AppPromptAttachment(fileName: "Выбранные письма", formatLabel: "Mail",
+                        extractedText: text, wasTruncatedDuringExtraction: false))
+                    showingMailPicker = false
+                    promptFocused = true
+                }
+            }
+        }
+        .onChange(of: mcpManager?.hasConnectedMail) { _, connected in
+            if connected != true { showingMailPicker = false }
         }
         .sheet(item: $previewedAttachment) { attachment in
             AttachmentPreviewSheet(attachment: attachment)
@@ -196,7 +215,7 @@ struct PromptComposerView: View {
             HStack(spacing: 8) {
                 ForEach(model.promptAttachments) { attachment in
                     HStack(spacing: 7) {
-                        Image(systemName: "doc.text")
+                        Image(systemName: attachment.formatLabel == "Mail" ? "envelope" : "doc.text")
                             .foregroundStyle(.secondary)
                         Button {
                             previewedAttachment = attachment
@@ -238,29 +257,50 @@ struct PromptComposerView: View {
     }
 
     private var attachmentAction: some View {
-        Button {
-            documentImportError = nil
-            showingAttachmentPicker = true
-        } label: {
-            Group {
-                if isExtractingDocuments {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Label("Attach", systemImage: "paperclip")
-                        .labelStyle(.iconOnly)
-                }
+        Group {
+            if mcpManager?.hasConnectedMail == true {
+                Menu {
+                    Button {
+                        openAttachmentPicker()
+                    } label: { Label("Файлы…", systemImage: "doc") }
+                    .help(attachmentActionHelp)
+                    Button {
+                        documentImportError = nil
+                        mailChatID = model.selectedChatID
+                        showingMailPicker = true
+                    } label: { Label("Письма…", systemImage: "envelope") }
+                } label: { attachmentActionLabel }
+                .menuIndicator(.hidden)
+                .help("Добавить файлы или письма")
+            } else {
+                Button(action: openAttachmentPicker) { attachmentActionLabel }
+                    .help(attachmentActionHelp)
             }
-            .frame(width: 28, height: 28)
-            .contentShape(Circle())
         }
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .disabled(!model.canEditSelectedChat || isExtractingDocuments)
-        .help(attachmentActionHelp)
         .accessibilityLabel(isExtractingDocuments
                             ? "Extracting document text"
-                            : "Attach files")
+                            : "Добавить вложение")
+    }
+
+    private var attachmentActionLabel: some View {
+        Group {
+            if isExtractingDocuments {
+                ProgressView().controlSize(.small)
+            } else {
+                Label("Добавить вложение", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .contentShape(Circle())
+    }
+
+    private func openAttachmentPicker() {
+        documentImportError = nil
+        showingAttachmentPicker = true
     }
 
     private var canChooseImages: Bool {

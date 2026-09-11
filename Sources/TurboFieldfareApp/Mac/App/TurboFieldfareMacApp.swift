@@ -107,6 +107,7 @@ struct TurboFieldfareMacApp: App {
     var body: some Scene {
         Window("TurboFieldfare", id: "main") {
             RootView(model: model, hasConnectedMail: mcpManager.hasConnectedMail)
+                .environment(mcpManager)
                 .sheet(item: Binding(get: { mcpManager.mailReview.pending }, set: { value in
                     if value == nil, let pending = mcpManager.mailReview.pending { mcpManager.mailReview.cancel(pending.id) }
                 })) { request in

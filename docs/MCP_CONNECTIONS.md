@@ -462,3 +462,14 @@ Select a result to view/copy its full text; add one message or all matching resu
 to the current chat as a Mail attachment for analysis and follow-up questions.
 The existing full-text/context budget checks still apply. Local archive deletion
 leaves server messages and existing chat attachments intact.
+
+
+Without a connected mail MCP, the composer **+** opens the file picker directly.
+While a mail MCP is connected, **+** offers **Файлы…** and **Письма…**. The mail option opens the workspace as an attachment picker in a
+sheet: filter downloaded messages, load another selection, check individual
+messages, or attach all matching results. Confirmation stages their full text
+as a Mail attachment with an envelope icon, closes the picker, and focuses the
+prompt. It neither fills the prompt nor starts generation. Users can preview or
+remove the attachment before sending. Attachment confirmation verifies that the
+original chat is still selected and editable; disconnecting mail dismisses the
+picker without attaching anything.

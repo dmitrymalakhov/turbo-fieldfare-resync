@@ -64,6 +64,8 @@ struct MCPConnectionsPresentationTests {
         try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
         try manager.mailArchive.upsert(headers.map { .init(profileID: id, header: $0, folder: "Inbox",
             body: "Коллеги, согласуйте план релиза до пятницы. Ответственный: Анна. Полный текст сохранён локально и доступен для поиска.") })
+        try renderView(MCPMailWorkspaceView(manager: manager, attachmentMode: true, useMail: { _ in }).preferredColorScheme(.light),
+            size: NSSize(width: 1100, height: 760), to: screenshots.appendingPathComponent("mail-attachment-picker.png"))
         try renderView(MCPMailWorkspaceView(manager: manager, useMail: { _ in }).preferredColorScheme(.light),
             size: NSSize(width: 1100, height: 760), to: screenshots.appendingPathComponent("mail-workspace.png"))
         try renderView(MCPMailSelectionView(manager: manager, request: request, confirm: { _ in }, cancel: {}).preferredColorScheme(.light),
