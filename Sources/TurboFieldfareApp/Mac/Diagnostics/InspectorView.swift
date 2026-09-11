@@ -128,8 +128,8 @@ struct InspectorView: View {
                 Text("Free \(MetricFormat.storage(requirement.shortfallBytes)) more storage.")
                     .font(.caption)
                     .foregroundStyle(.orange)
-            } else if model.isVisionCompanionOperationInProgress {
-                Text("Model actions stay unavailable until this finishes. "
+            } else if model.isVisionFilesystemMutationInProgress {
+                Text("Model actions stay unavailable until this filesystem change finishes. "
                     + "Your prompt, images, and transcript are kept.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -150,11 +150,13 @@ struct InspectorView: View {
                 } else if model.isInstallingVisionPack {
                     Button("Cancel", action: model.cancelVisionInstall)
                         .disabled(!model.canCancelVisionInstall)
+                        .accessibilityIdentifier(.visionCancel)
                 } else if case .readyToActivate = model.visionInstallState {
                     Button("Discard", role: .destructive) {
                         model.discardVisionPackDownload()
                     }
                     .disabled(!model.canDiscardVisionPackDownload)
+                    .accessibilityIdentifier(.visionDiscard)
                     if model.isVisionRuntimeSupported {
                         Button("Enable", action: model.enableVisionPack)
                             .buttonStyle(.borderedProminent)
@@ -165,18 +167,21 @@ struct InspectorView: View {
                         model.requestVisionPackRemoval()
                     }
                     .disabled(!model.canRemoveVisionPack)
+                    .accessibilityIdentifier(.visionRemove)
                 } else {
                     if model.hasVisionPackDirectory {
                         Button("Remove", role: .destructive) {
                             model.requestVisionPackRemoval()
                         }
-                        .disabled(!model.canRemoveVisionPack)
+                    .disabled(!model.canRemoveVisionPack)
+                    .accessibilityIdentifier(.visionRemove)
                     }
                     if model.hasPartialVisionPackDownload {
                         Button("Discard", role: .destructive) {
                             model.discardVisionPackDownload()
                         }
                         .disabled(!model.canDiscardVisionPackDownload)
+                        .accessibilityIdentifier(.visionDiscard)
                     }
                     if model.isVisionRuntimeSupported {
                         Button(visionInstallButtonLabel) {
@@ -266,7 +271,7 @@ struct InspectorView: View {
     private var contextSection: some View {
         Section("Context") {
             LabeledContent("Window") {
-                Picker("Context", selection: $model.maxContextTokens) {
+                Picker("Context", selection: Binding(get: { model.maxContextTokens }, set: { model.setMaxContextTokens($0) })) {
                     ForEach(AppContextLengthOption.allCases) { option in
                         Text(option.menuLabel).tag(option.tokens)
                     }
@@ -422,19 +427,42 @@ struct InspectorView: View {
             .disabled(model.isLocalServerActive)
             if model.canUnloadModel {
                 Button("Unload Model", action: model.unloadModel)
+                    .accessibilityIdentifier(.inspectorUnload)
             }
             LabeledContent("State") {
                 Text(model.presentation.label)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if model.requiresModelInstallation {
-                LabeledContent("Download") {
-                    Text(MetricFormat.storage(model.installDescriptor.approximateDownloadBytes))
+            LabeledContent("Download") {
+                Text(MetricFormat.storage(model.installDescriptor.approximateDownloadBytes))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if let metrics = model.modelStorageMetrics {
+                LabeledContent("Installed logical") {
+                    Text(MetricFormat.storage(metrics.logicalBytes))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                LabeledContent("Installed size") {
+                LabeledContent("Installed allocated") {
+                    Text(MetricFormat.storage(metrics.allocatedBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let available = metrics.availableBytes {
+                    LabeledContent("Available") {
+                        Text(MetricFormat.storage(available))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else if let metricsError = model.modelStorageMetricsError {
+                Text(metricsError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if model.requiresModelInstallation {
+                LabeledContent("Expected installed") {
                     Text(MetricFormat.storage(model.installDescriptor.installedBytes))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -456,6 +484,7 @@ struct InspectorView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .fixedSize()
+                .accessibilityIdentifier(.inspectorSlots)
             }
             Text("More cache slots may improve decode speed and use more RAM. This setting applies after reloading.")
                 .font(.caption)
@@ -469,6 +498,7 @@ struct InspectorView: View {
             LabeledContent("Temperature") {
                 HStack(spacing: 8) {
                     Slider(value: $model.temperature, in: 0...2, step: 0.05)
+                        .accessibilityIdentifier(.inspectorTemperature)
                     Text(model.temperature, format: .number.precision(.fractionLength(2)))
                         .monospacedDigit()
                         .frame(width: 36, alignment: .trailing)
@@ -481,14 +511,17 @@ struct InspectorView: View {
                         Text("\(model.topK)").monospacedDigit()
                     }
                     .fixedSize()
+                    .accessibilityIdentifier(.inspectorTopKValue)
                 }
             }
             Toggle("Top-P", isOn: $model.topPEnabled)
                 .disabled(!model.topKEnabled)
+                .accessibilityIdentifier(.inspectorTopP)
             if model.topKEnabled && model.topPEnabled {
                 LabeledContent("P value") {
                     HStack(spacing: 8) {
                         Slider(value: $model.topP, in: 0.01...1, step: 0.01)
+                            .accessibilityIdentifier(.inspectorTopPValue)
                         Text(model.topP, format: .number.precision(.fractionLength(2)))
                             .monospacedDigit()
                             .frame(width: 36, alignment: .trailing)
@@ -511,6 +544,7 @@ struct InspectorView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .accessibilityIdentifier(.inspectorRDAdvise)
             }
             Text("RDADVISE is experimental and applies after reloading. Prompt prefill applies to the next request.")
                 .font(.caption)

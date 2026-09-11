@@ -10,10 +10,12 @@ public struct AppGenerationMessage: Codable, Equatable, Sendable {
 
     public var role: Role
     public var content: String
+    public var imageIDs: [UUID]?
 
-    public init(role: Role, content: String) {
+    public init(role: Role, content: String, imageIDs: [UUID]? = nil) {
         self.role = role
         self.content = content
+        self.imageIDs = imageIDs
     }
 }
 
@@ -56,7 +58,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
 
     public init(modelDirectory: URL,
                 prompt: String,
-                imageAttachments: [AppImageAttachment] = [],
+                imageAttachments: [StagedImage] = [],
                 maxNewTokens: Int = 4_096,
                 maxContextTokens: Int = 4096,
                 temperature: Float = 0.2,
@@ -123,6 +125,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
         guard !messages.isEmpty,
               messages.allSatisfy({
                   !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      || ($0.role == .user && !($0.imageIDs ?? []).isEmpty)
                       || ($0.role == .user && $0 == messages.last && !imageAttachments.isEmpty)
               }),
               messages.last?.role == .user else {
@@ -142,6 +145,14 @@ public struct AppGenerationRequest: Equatable, Sendable {
         guard Set(imageAttachments.map(\.id)).count == imageAttachments.count else {
             throw AppInferenceError.invalidRequest("Images must be distinct.")
         }
+        if messages.contains(where: { $0.imageIDs != nil }) {
+            let assigned = messages.flatMap { $0.imageIDs ?? [] }
+            guard messages.allSatisfy({ $0.role == .user || ($0.imageIDs ?? []).isEmpty }),
+                  Set(assigned).count == assigned.count,
+                  assigned == imageAttachments.map(\.id) else {
+                throw AppInferenceError.invalidRequest("Image references must match their message order and attachments exactly.")
+            }
+        }
         guard maxContextTokens > 0 else {
             throw AppInferenceError.invalidRequest("Max context must be greater than zero.")
         }
@@ -153,8 +164,12 @@ public struct AppGenerationRequest: Equatable, Sendable {
         // around. Reserving zero here admitted an image that fits an empty
         // context into a context that was almost full, and the turn then failed
         // deep in prefill instead of at the composer.
+        // Plus the reply's reserve, which `generate` checks after every image
+        // has been encoded; admitting a set that fits the context but not the
+        // reserve failed the turn on the runtime instead of here.
         let capacity = VisionImageTokenBudget.capacity(
-            maxContext: maxContextTokens, reservedTextTokens: conversationTokens)
+            maxContext: maxContextTokens,
+            reservedTextTokens: conversationTokens + ConversationGenerationReserve.tokens)
         guard imageAttachments.count <= capacity else {
             throw AppInferenceError.invalidRequest(
                 "\(imageAttachments.count) images need up to "

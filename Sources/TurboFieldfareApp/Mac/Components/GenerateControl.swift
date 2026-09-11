@@ -7,7 +7,7 @@ struct GenerateControl: View {
     private let controlHeight: CGFloat = 34
 
     var body: some View {
-        if model.isRunning {
+        if model.isTurnInFlight {
             runningPill
         } else if model.isPreparingSubmission {
             preparingPill
@@ -35,6 +35,7 @@ struct GenerateControl: View {
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!model.canSubmitPrompt)
         .opacity(model.canSubmitPrompt ? 1 : 0.62)
+        .accessibilityIdentifier(.composerGenerate)
     }
 
     private var submitTitle: String {
@@ -97,6 +98,7 @@ struct GenerateControl: View {
         .keyboardShortcut(.cancelAction)
         .disabled(!model.canCancel)
         .help("Stop generation")
+        .accessibilityIdentifier(.composerStop)
         .animation(.smooth(duration: 0.2), value: model.presentation.label)
     }
 }

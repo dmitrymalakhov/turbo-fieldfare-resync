@@ -12,6 +12,13 @@ struct RootView: View {
     private var isInspectorVisible = false
 
     var body: some View {
+        // Three columns in one HStack, not a NavigationSplitView. The split
+        // view brought a second sidebar toggle of its own, moved our controls
+        // whenever the sidebar opened, and left the sidebar column inert to the
+        // mouse. Both side panels are now the same shape — a fixed-width column
+        // beside a flexible middle — which is also what keeps a narrow window
+        // from slicing one in half: the sides hold their width and the
+        // transcript gives up the space.
         HStack(spacing: 0) {
             if isChatSidebarVisible {
                 ChatSidebarView(model: model)
@@ -74,6 +81,32 @@ struct RootView: View {
         }
     }
 
+    static let sidebarWidth: CGFloat = 260
+    static let inspectorWidth: CGFloat = 320
+    /// How a side panel opens and closes.
+    ///
+    /// Carried by `withAnimation` around the state change itself, not by an
+    /// `.animation(value:)` on this view. Attached further down — to the panel
+    /// frames — the surrounding `HStack` took the final widths immediately and
+    /// only the panel slid. Attached here at the root it animated the whole
+    /// subtree, and that swept up anything else changing in the same run loop
+    /// turn: clicking a toggle put its own button into the pressed state, whose
+    /// release then faded back in over the length of the slide, so the control
+    /// just clicked read as having disappeared. An explicit transaction covers
+    /// the state change and nothing else.
+    static let panelSlide: Animation = .smooth(duration: 0.22)
+    /// What the transcript keeps when both panels are open at the window's
+    /// minimum width. Lower than the 720 the old two-column layout could
+    /// afford, because a third panel has to come from somewhere — and the
+    /// alternative, letting a panel be clipped, is the thing this layout exists
+    /// to prevent.
+    ///
+    /// Measured against the status row, which is the widest thing this column
+    /// has to hold: the two chat controls, the pill, and the Inspector toggle.
+    /// At 440 the pill ran out of room and truncated the model's own name to
+    /// "Gem…", which is the one string on that row that has to stay readable.
+    static let transcriptMinimumWidth: CGFloat = 530
+
     private var primaryContent: some View {
         Group {
             if model.requiresModelInstallation {
@@ -129,6 +162,7 @@ struct RootView: View {
 
     private var conversationChrome: some View {
         VStack(spacing: 10) {
+            ConversationStateNoticeView(model: model)
             ErrorBanner(model: model)
             if model.canUndoClearHistory {
                 HStack(spacing: 8) {

@@ -173,6 +173,7 @@ struct ModelInstallView: View {
                     .buttonStyle(.bordered)
                     .keyboardShortcut(.cancelAction)
                     .disabled(!model.canCancelInstall)
+                    .accessibilityIdentifier(.installCancel)
             } else {
                 Button("Choose Existing Model…") {
                     ModelLocationPicker.choose(for: model)
@@ -186,6 +187,7 @@ struct ModelInstallView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(!model.canDiscardModelDownload)
+                    .accessibilityIdentifier(.installDiscard)
                 }
 
                 if showsCheckAgain {
@@ -198,6 +200,7 @@ struct ModelInstallView: View {
                        action: model.installModel)
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canInstallModel)
+                    .accessibilityIdentifier(.installDownload)
             }
         }
         .controlSize(.large)

@@ -20,8 +20,16 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var modelVerification: AppModelVerification = .fullSha256
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
+    /// Whether the list of chats is showing. Remembered because hiding it is a
+    /// choice about how the window looks, and a window that forgot it every
+    /// launch would be making that choice again for the user each time.
+    var sidebarVisible: Bool = true
+    /// Whether the Inspector is showing. Remembered for the same reason the
+    /// sidebar is: it is a choice about the window, not about one session.
+    var inspectorVisible: Bool = true
     var visionResidencyPolicy: VisionResidencyPolicy = .onDemand
     var loadModelOnLaunch: Bool = false
+    var selectedConversationID: UUID?
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -39,8 +47,11 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case modelVerification
         case newlineShortcut
         case showPromptExamples
+        case sidebarVisible
+        case inspectorVisible
         case visionResidencyPolicy
         case loadModelOnLaunch
+        case selectedConversationID
     }
 
     init(version: Int = currentVersion,
@@ -58,8 +69,11 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          modelVerification: AppModelVerification = .fullSha256,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
+         sidebarVisible: Bool = true,
+         inspectorVisible: Bool = true,
          visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
-         loadModelOnLaunch: Bool = false) {
+         loadModelOnLaunch: Bool = false,
+         selectedConversationID: UUID? = nil) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -75,8 +89,11 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.modelVerification = modelVerification
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
+        self.sidebarVisible = sidebarVisible
+        self.inspectorVisible = inspectorVisible
         self.visionResidencyPolicy = visionResidencyPolicy
         self.loadModelOnLaunch = loadModelOnLaunch
+        self.selectedConversationID = selectedConversationID
     }
 
     init(from decoder: Decoder) throws {
@@ -108,12 +125,24 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         showPromptExamples = try container.decodeIfPresent(
             Bool.self,
             forKey: .showPromptExamples) ?? true
+        // Additive, like every field around it: absent means the default, so
+        // no version bump and no rewrite of a file an older build can still
+        // read.
+        sidebarVisible = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .sidebarVisible) ?? true
+        inspectorVisible = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .inspectorVisible) ?? true
         visionResidencyPolicy = try container.decodeIfPresent(
             VisionResidencyPolicy.self,
             forKey: .visionResidencyPolicy) ?? .onDemand
         loadModelOnLaunch = try container.decodeIfPresent(
             Bool.self,
             forKey: .loadModelOnLaunch) ?? false
+        selectedConversationID = try container.decodeIfPresent(
+            UUID.self,
+            forKey: .selectedConversationID)
     }
 
     func isValid() -> Bool {

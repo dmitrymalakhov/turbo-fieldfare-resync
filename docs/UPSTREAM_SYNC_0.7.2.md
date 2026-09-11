@@ -71,6 +71,9 @@ conformance and redundant nil coalescing in server inference.
 
 ## Separate 0.8.0 integration
 
+The follow-up is now documented in [Upstream 0.8.0 integration](UPSTREAM_SYNC_0.8.0.md).
+The assessment below records the state of the earlier 0.7.2 merge.
+
 Upstream `4c6db1e698ea861609109d4bc517410ff302af46` (PR #174) is not included.
 Its history implementation changes storage, replay, decode transport, and UI
 together. The preliminary full-upstream merge showed textual conflicts in

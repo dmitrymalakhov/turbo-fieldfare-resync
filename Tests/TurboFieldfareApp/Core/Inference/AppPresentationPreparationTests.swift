@@ -39,6 +39,7 @@ import Testing
         #expect(model.canPreparePresentationFromResponse)
 
         let branchID = try #require(model.preparePresentationFromResponse())
+        await SendWaiting.generationStarts(model)
         let source = try #require(model.chats.first { $0.id == sourceChatID })
         let branch = try #require(model.chats.first { $0.id == branchID })
 
@@ -78,8 +79,6 @@ import Testing
 
     @MainActor
     private func waitForIdle(_ model: AppModel) async {
-        for _ in 0..<200 where model.isRunning {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await SendWaiting.turnEnds(model)
     }
 }

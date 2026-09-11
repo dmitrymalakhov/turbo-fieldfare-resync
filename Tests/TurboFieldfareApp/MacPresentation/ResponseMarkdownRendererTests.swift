@@ -1598,8 +1598,8 @@ import Testing
         #expect(milliseconds(unchanged) < 1)
     }
 
-    @Test func terminalFormattingAlwaysScrollsToBottom() {
-        #expect(InstructionTranscriptDocumentController.shouldScrollToBottom(
+    @Test func terminalFormattingPreservesReaderOwnedScroll() {
+        #expect(!InstructionTranscriptDocumentController.shouldScrollToBottom(
             wasAtBottom: false,
             mutation: .finalized))
         #expect(InstructionTranscriptDocumentController.shouldScrollToBottom(

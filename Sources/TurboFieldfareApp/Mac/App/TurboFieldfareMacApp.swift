@@ -11,15 +11,61 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var model: AppModel?
     @MainActor static var mcpManager: AppMCPManager?
 
+    /// The last exchange's write finishes before the process goes.
+    ///
+    /// It starts when the reply lands and, with pictures, runs for seconds
+    /// after the send has returned; quitting under it lost the exchange and
+    /// released the staged files it was still reading. Bounded, so a write
+    /// that hangs cannot keep the app alive.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model = MainActor.assumeIsolated({ Self.model }) else {
+            return .terminateNow
+        }
+        Task { @MainActor in
+            if await !model.awaitPendingPersistence(timeout: .seconds(30)) {
+                FileHandle.standardError.write(Data(
+                    "Conversation persistence did not finish before the quit deadline; the latest exchange may not be saved.\n".utf8))
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             Self.model?.stopOwnedLocalServerForApplicationTermination()
-            Self.model?.releaseAllAttachments()
+            Self.model?.shutdownForTermination()
             Self.mcpManager?.stopAll()
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Self.model?.reacquireStoreIfPossible()
+            Self.model?.recheckVisionPackAtCurrentLocation()
+        }
+    }
+
+    private var peerObserver: (any NSObjectProtocol)?
+
+    private func watchForPeersQuitting() {
+        peerObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            // Another copy of this same executable, not any app that quit.
+            guard app?.bundleIdentifier == Bundle.main.bundleIdentifier
+                    || app?.executableURL == Bundle.main.executableURL else {
+                return
+            }
+            MainActor.assumeIsolated { Self.model?.reacquireStoreIfPossible() }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        watchForPeersQuitting()
         NSApp.setActivationPolicy(.regular)
         if let icon = MacAppIcon.load() {
             NSApp.applicationIconImage = icon
@@ -61,7 +107,8 @@ struct TurboFieldfareMacApp: App {
     var body: some Scene {
         Window("TurboFieldfare", id: "main") {
             RootView(model: model)
-                .frame(minWidth: 1040, minHeight: 560)
+                // The three columns at their minimums, plus their dividers.
+                .frame(minWidth: 1112, minHeight: 560)
                 // Once, when the window first appears: the setting is read
                 // from disk in init, and loadModelAtLaunchIfEnabled ignores a
                 // model that is missing or already busy.
@@ -86,6 +133,9 @@ struct TurboFieldfareMacApp: App {
                     AppAppearance.resolve(appearanceRawValue)
                         .preferredColorScheme)
         }
+        // No toolbar at all. The window's controls live in the status strip
+        // beside the model name, so a title bar here would be an empty strip
+        // above the content with nothing in it.
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 760)
         .windowResizability(.contentMinSize)

@@ -47,10 +47,8 @@ import Testing
     }
 
     @MainActor private func waitForIdle(_ model: AppModel) async throws {
-        for _ in 0..<1_000 where model.isRunning {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        #expect(!model.isRunning)
+        await SendWaiting.turnEnds(model)
+        #expect(!model.isTurnInFlight)
     }
 
     @Test func legacyMessagesAndChatsDecodeWithoutImages() throws {
@@ -115,6 +113,7 @@ import Testing
         #expect(model.selectedChat.messages.first?.id != message.id)
         #expect(model.selectedChat.messages.first?.images == message.images)
         model.deleteChat(id: sourceID)
+        await model.conversationDeletionTask?.value
         model.flushChatPersistence()
         #expect(FileManager.default.fileExists(atPath: image.fileURL.path))
         model.clearOutput()
@@ -123,6 +122,7 @@ import Testing
         model.undoClearHistory()
         #expect(model.selectedChat.messages.first?.images == message.images)
         model.deleteChat(id: branchID)
+        await model.conversationDeletionTask?.value
         model.flushChatPersistence()
         #expect(!FileManager.default.fileExists(atPath: image.fileURL.path))
     }
@@ -167,6 +167,7 @@ import Testing
         let image = try #require(model.composerImageAttachments.first)
         try FileManager.default.removeItem(at: image.fileURL)
         model.run()
+        await SendWaiting.turnEnds(model)
         #expect(!model.isRunning)
         #expect(model.error != nil)
         #expect(model.selectedChat.messages.isEmpty)
@@ -184,6 +185,7 @@ import Testing
         try Data("not a directory".utf8).write(to: directory)
         model.promptText = "describe"
         model.run()
+        await SendWaiting.turnEnds(model)
         #expect(!model.isRunning)
         #expect(model.error != nil)
         #expect(model.promptText == "describe")
@@ -272,10 +274,35 @@ import Testing
         defer { unsupported.releaseAllAttachments() }
         unsupported.loadState = .ready(modelDirectory: fixture.directory, loadSeconds: 0)
         unsupported.run()
+        await SendWaiting.turnEnds(unsupported)
         #expect(unsupported.error != nil)
         #expect(!unsupported.isRunning)
         #expect(unsupported.selectedChat.messages.isEmpty)
         #expect(unsupported.composerImageAttachments.count == 1)
+    }
+
+    @MainActor @Test func copiedImageHistoryIsRebuiltWithoutAttachingOldImagesToTheNewMessage() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let model = fixture.model()
+        defer { model.releaseAllAttachments() }
+        try await attach(model, fixture: fixture)
+        model.promptText = "describe"
+        model.run()
+        try await waitForIdle(model)
+        let source = model.selectedChat
+        _ = model.branchChat(from: source.id)
+        model.promptText = "what about the earlier picture?"
+        let request = try model.makeRequest()
+        #expect(request.imageAttachments.count == 1)
+        #expect(request.messages.first?.imageIDs == request.imageAttachments.map(\.id))
+        #expect(request.messages.last?.imageIDs == [])
+        model.run()
+        try await waitForIdle(model)
+        #expect(model.error == nil)
+        let users = model.selectedChat.messages.filter { $0.role == .user }
+        #expect(users.map { $0.images.count } == [1, 0])
+        #expect(model.composerImageAttachments.isEmpty)
     }
 
     @Test func cleanupWaitsForSuccessfulSaveAndNeverSweepsUncommittedImages() throws {

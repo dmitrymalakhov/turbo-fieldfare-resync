@@ -135,7 +135,7 @@ struct OutputPaneView: View {
             }
             .frame(maxWidth: 860)
             .frame(maxWidth: .infinity)
-            if model.isSelectedChatRunning {
+            if model.isSelectedChatRunning || model.screen.isReplaying {
                 IncrementalTranscriptView(
                     messages: model.transcriptBaseMessages.map { message in
                         InstructionTranscriptMessage(
@@ -146,7 +146,7 @@ struct OutputPaneView: View {
                     },
                     lastAnswer: model.outputResponsePlainText,
                     conversationPlainText: model.outputConversationPlainText,
-                    requestNewChat: model.isRunning ? nil : { model.newChat() },
+                    requestNewChat: model.isTurnInFlight ? nil : { model.newChat() },
                     prompt: model.outputPromptText,
                     images: model.outputImageAttachments,
                     output: model.outputText,
@@ -439,15 +439,16 @@ struct OutputPaneView: View {
                        action: model.loadModel)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-            } else if isLoadingModel {
-                Button("Load Model", action: {})
+                    .accessibilityIdentifier(.transcriptLoad)
+            } else if model.canCancelLoad {
+                Button("Cancel Load", action: model.cancelLoad)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .hidden()
-                    .accessibilityHidden(true)
+                    .accessibilityIdentifier(.bannerModelAction)
             } else if model.canReloadModel {
                 Button("Reload Model", action: model.reloadModel)
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(.transcriptReload)
             }
         }
         .frame(maxWidth: .infinity)
@@ -975,12 +976,12 @@ struct ConversationMemorySheet: View {
 }
 
 struct SubmittedImageThumbnail: View {
-    let attachment: AppImageAttachment
+    let attachment: ChatImage
     let maximumSize: CGSize
     @State private var image: NSImage?
 
     init(
-        attachment: AppImageAttachment,
+        attachment: ChatImage,
         maximumSize: CGSize = CGSize(width: 48, height: 48)
     ) {
         self.attachment = attachment
@@ -1146,7 +1147,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
     var conversationPlainText: String = ""
     var requestNewChat: (() -> Void)?
     var prompt: String
-    var images: [AppImageAttachment] = []
+    var images: [ChatImage] = []
     var output: String
     var mailbox: GenerationTranscriptMailbox?
     var isTerminal: Bool
@@ -1245,7 +1246,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             conversationPlainText: String,
             requestNewChat: (() -> Void)?,
             prompt: String,
-            images: [AppImageAttachment],
+            images: [ChatImage],
             output: String,
             mailbox: GenerationTranscriptMailbox?,
             isTerminal: Bool,
@@ -1266,7 +1267,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             self.mailbox = activeMailbox
             self.messages = messages
             self.prompt = prompt
-            let prefixIdentifier = ([images] + messages.map(\.images)).map { group in
+            let prefixIdentifier = ([images] + messages.map { $0.images.map(ChatImage.staged) }).map { group in
                 group.map { "\($0.fileURL.path):\($0.sha256)" }.joined(separator: ",")
             }.joined(separator: "|")
             if prefixIdentifier != promptPrefixIdentifier {
@@ -1317,60 +1318,35 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             firstSynchronize: Bool
         ) {
             guard let textView, let storage = textView.textStorage else { return }
-            let steps = planner.plan(TranscriptSyncPlanner.Input(
-                epoch: epoch, historyCount: history.count, contextBreak: contextBreak,
-                startedNewRun: startedNewRun, firstSynchronize: firstSynchronize))
-            guard !steps.isEmpty else { return }
-
-            storage.beginEditing()
+            let controller = documentController
+            let steps = controller.synchronizeHistory(
+                storage: storage, planner: &planner,
+                input: TranscriptSyncPlanner.Input(
+                    epoch: epoch, historyCount: history.count, contextBreak: contextBreak,
+                    startedNewRun: startedNewRun, firstSynchronize: firstSynchronize)
+            ) { index in
+                let pair = history[index]
+                _ = controller.synchronize(
+                    storage: storage, prompt: pair.user.text,
+                    response: pair.assistant.text, isTerminal: true,
+                    promptPrefix: Self.makePromptPrefix(pair.user.images),
+                    promptPrefixIdentifier: pair.user.images
+                        .map { "\($0.id.uuidString):\($0.sha256)" }
+                        .joined(separator: ","))
+            }
             for step in steps {
                 switch step {
                 case .reset:
-                    documentController.resetTranscript(storage: storage)
-                    promptPrefixIdentifier = ""
                     promptPrefix = NSAttributedString()
+                    promptPrefixIdentifier = ""
                     prompt = ""
-                case .sealDrawnTurn:
-                    let before = documentController.frozenLength
-                    documentController.sealTurn(storage: storage)
-                    if documentController.frozenLength == before {
-                        // It froze nothing, so the pair is still owed; consuming
-                        // it would drop a turn that is in the KV from the
-                        // transcript for good.
-                        planner.sealFoundNothingToFreeze(historyCount: history.count)
-                    }
-                case .drawPair(let index):
-                    guard index < history.count else { break }
-                    let pair = history[index]
-                    _ = documentController.synchronize(
-                        storage: storage,
-                        prompt: pair.user.text,
-                        response: pair.assistant.text,
-                        isTerminal: true,
-                        // Cached thumbnails only. A history image whose
-                        // thumbnail has not been decoded yet is dropped rather
-                        // than blocking the redraw; the same degradation the
-                        // live path already accepts.
-                        promptPrefix: Self.makePromptPrefix(pair.user.images),
-                        promptPrefixIdentifier: pair.user.images
-                            .map { "\($0.id.uuidString):\($0.sha256)" }
-                            .joined(separator: ","))
-                    documentController.sealTurn(storage: storage)
+                case .drawPair:
                     prompt = ""
                     promptPrefixIdentifier = ""
-                case .appendContextBreak:
-                    let before = documentController.frozenLength
-                    documentController.appendContextBreak(
-                        storage: storage,
-                        text: "Earlier turns are no longer in the model's context")
-                    // Only marked when it actually wrote. Latching it on a
-                    // refusal suppressed the break for the rest of the session.
-                    if documentController.frozenLength != before {
-                        planner.markContextBreakDrawn()
-                    }
+                case .sealDrawnTurn, .appendContextBreak:
+                    break
                 }
             }
-            storage.endEditing()
         }
 
         func scrollToBottom() {
@@ -1557,10 +1533,10 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         /// stopped wanting is dropped rather than applied. Images arriving after
         /// the first paint is the case `follow` already exists for.
         private func buildPromptPrefix(
-            _ images: [AppImageAttachment], messages: [InstructionTranscriptMessage],
+            _ images: [ChatImage], messages: [InstructionTranscriptMessage],
             identifier: String
         ) {
-            let allImages = images + messages.flatMap(\.images)
+            let allImages = images + messages.flatMap { $0.images.map(ChatImage.staged) }
             guard !allImages.isEmpty else { return }
             Task { [weak self] in
                 let thumbnails = await Task.detached(priority: .userInitiated) {
@@ -1579,7 +1555,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
                 self.historyImagePrefixes = Dictionary(uniqueKeysWithValues:
                     messages.enumerated().compactMap { index, message in
                         guard !message.images.isEmpty else { return nil }
-                        return (index, Self.makePromptPrefix(message.images, thumbnails: thumbnails))
+                        return (index, Self.makePromptPrefix(message.images.map(ChatImage.staged), thumbnails: thumbnails))
                     })
                 self.apply(
                     messages: self.messages,
@@ -1593,29 +1569,22 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         private static func makePromptPrefix(
-            _ images: [AppImageAttachment], thumbnails: [URL: NSImage]? = nil
+            _ images: [ChatImage], thumbnails: [URL: NSImage]? = nil
         ) -> NSAttributedString {
+            let cells = TranscriptImageCells.images(
+                for: images,
+                load: { attachment in
+                    guard let image = thumbnails?[attachment.fileURL] ?? SubmittedImageThumbnail.loadThumbnail(
+                        at: attachment.fileURL,
+                        maximumPixelSize: 720,
+                        cacheKey: attachment.sha256) else { return nil }
+                    image.size = SubmittedImageThumbnail.fittedSize(
+                        image.size, within: CGSize(width: 360, height: 240))
+                    return image
+                },
+                unreadable: Self.unreadableImageTile)
             let result = NSMutableAttributedString()
-            for attachment in images {
-                if result.length > 0 {
-                    result.append(NSAttributedString(string: "\n"))
-                }
-                let decoded: NSImage?
-                if let thumbnails {
-                    decoded = thumbnails[attachment.fileURL]
-                } else {
-                    decoded = SubmittedImageThumbnail.loadThumbnail(
-                        at: attachment.fileURL, maximumPixelSize: 720,
-                        cacheKey: attachment.sha256)
-                }
-                guard let image = decoded else {
-                    result.append(NSAttributedString(
-                        string: "[Saved image unavailable: \(attachment.displayName)]"))
-                    continue
-                }
-                image.size = SubmittedImageThumbnail.fittedSize(
-                    image.size,
-                    within: CGSize(width: 360, height: 240))
+            for image in cells {
                 let textAttachment = NSTextAttachment()
                 textAttachment.attachmentCell = NSTextAttachmentCell(
                     imageCell: Self.rounded(image))
@@ -1627,6 +1596,39 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         /// The transcript draws its images as text attachments, which cannot be
         /// clipped by the view the way the composer's thumbnails are, so the
         /// corners have to be drawn into the image itself.
+        /// Stands in for an image whose file is gone or will not decode.
+        ///
+        /// The same shape and the same symbol the composer already falls back
+        /// to, so the two degrade alike. Its job is only to say a picture
+        /// belongs here: what it was is in the answer, and why it cannot be
+        /// read is not something the reader can act on from the transcript.
+        private static func unreadableImageTile() -> NSImage {
+            let size = NSSize(width: 160, height: 120)
+            let tile = NSImage(size: size)
+            tile.lockFocus()
+            defer { tile.unlockFocus() }
+            NSColor.quaternarySystemFill.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            let configuration = NSImage.SymbolConfiguration(
+                pointSize: 28, weight: .regular)
+            if let symbol = NSImage(
+                systemSymbolName: "photo", accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration) {
+                let tinted = NSImage(size: symbol.size)
+                tinted.lockFocus()
+                NSColor.tertiaryLabelColor.set()
+                NSRect(origin: .zero, size: symbol.size).fill(using: .sourceOver)
+                symbol.draw(in: NSRect(origin: .zero, size: symbol.size),
+                            from: .zero, operation: .destinationIn, fraction: 1)
+                tinted.unlockFocus()
+                tinted.draw(in: NSRect(
+                    x: (size.width - symbol.size.width) / 2,
+                    y: (size.height - symbol.size.height) / 2,
+                    width: symbol.size.width, height: symbol.size.height))
+            }
+            return tile
+        }
+
         private static func rounded(_ image: NSImage) -> NSImage {
             let size = image.size
             guard size.width > 1, size.height > 1 else { return image }

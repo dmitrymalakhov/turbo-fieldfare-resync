@@ -606,7 +606,7 @@ struct AppMCPTests {
 
     private func waitForPrompt(_ model: AppModel) async throws {
         for _ in 0..<300 {
-            if !model.isRunning { return }
+            if !model.isTurnInFlight { return }
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Prompt did not finish")

@@ -73,6 +73,8 @@ public struct AppChat: Identifiable, Codable, Equatable, Sendable {
     public var draftAttachments: [AppPromptAttachment]
     public var draftImages: [AppChatImageAttachment]?
     public var draftContextContent: String?
+    /// Optional link to the exact token record. Absent in older archives.
+    public var conversationID: UUID?
     public var contextSummary: String?
     public var summarizedThroughMessageID: AppChatMessage.ID?
     public var branchedFromChatID: AppChat.ID?

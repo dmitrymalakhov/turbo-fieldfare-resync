@@ -881,7 +881,7 @@ import Testing
         model.promptText = "pending"
 
         model.run()
-        #expect(model.isRunning)
+        #expect(model.isTurnInFlight)
         #expect(model.createChat() == activeChatID)
         model.selectChat(id: otherChatID)
         model.renameChat(id: activeChatID, title: "Renamed")
@@ -1004,7 +1004,7 @@ import Testing
         model.promptText = "still editable"
 
         model.run()
-        #expect(model.isRunning)
+        #expect(model.isTurnInFlight)
         model.cancel()
         await waitForIdle(model)
 
@@ -1020,7 +1020,7 @@ import Testing
         let model = AppModel(client: client)
         let directory = FileManager.default.temporaryDirectory
         model.modelPathText = directory.path
-        model.maxContextTokens = 512
+        model.setMaxContextTokens(512)
         model.maxNewTokensOverride = 1
         model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
 
@@ -1107,7 +1107,7 @@ import Testing
         let model = AppModel(client: client)
         let directory = FileManager.default.temporaryDirectory
         model.modelPathText = directory.path
-        model.maxContextTokens = 512
+        model.setMaxContextTokens(512)
         model.maxNewTokensOverride = 1
         model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
 
@@ -1141,7 +1141,7 @@ import Testing
         let model = AppModel(client: client)
         let directory = FileManager.default.temporaryDirectory
         model.modelPathText = directory.path
-        model.maxContextTokens = 512
+        model.setMaxContextTokens(512)
         model.maxNewTokensOverride = 1
         model.loadState = .ready(modelDirectory: directory, loadSeconds: 0)
 
@@ -1200,9 +1200,7 @@ import Testing
 
     @MainActor
     private func waitForIdle(_ model: AppModel) async {
-        for _ in 0..<200 where model.isRunning {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await SendWaiting.turnEnds(model)
     }
 }
 
