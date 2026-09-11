@@ -18,6 +18,7 @@ public struct AppMCPMailGroup: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct AppMCPMailContacts: Codable, Equatable, Sendable {
+    public var identity: AppMCPMailIdentity?
     public var contacts: [AppMCPMailContact] = []
     public var groups: [AppMCPMailGroup] = []
     public var excludedEmails: Set<String> = []

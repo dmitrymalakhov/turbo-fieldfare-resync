@@ -244,6 +244,9 @@ struct TurboFieldfareMacApp: App {
                 }
                 model.addPromptAttachment(AppPromptAttachment(fileName: "Выбранные письма", formatLabel: "Mail",
                     extractedText: text, wasTruncatedDuringExtraction: false))
+                if model.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    model.promptText = "Разбери выбранные письма с учётом фильтров: что требует моего действия, какие есть сроки и что нужно уточнить? Опирайся на полные тексты писем."
+                }
                 openWindow(id: "main")
             }
             .preferredColorScheme(AppAppearance.resolve(appearanceRawValue).preferredColorScheme)

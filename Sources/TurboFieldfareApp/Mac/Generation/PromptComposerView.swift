@@ -77,6 +77,9 @@ struct PromptComposerView: View {
                 }
             }
         }
+        .onChange(of: model.promptAttachments.count) { before, after in
+            if after > before { promptFocused = true }
+        }
         .onChange(of: mcpManager?.hasConnectedMail) { _, connected in
             if connected != true { showingMailPicker = false }
         }

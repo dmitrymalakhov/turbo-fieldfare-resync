@@ -104,6 +104,7 @@ extension AppMCPManager {
         }
         try Task.checkCancellation()
         let text = """
+        \(profiles.first { $0.id == preview.profileID }?.mailContacts?.identity?.referenceText ?? "")
         Exchange mail. Folder: \(preview.folder), excluding subfolders.
         Period: \(preview.bounds).
         Scope: user-selected messages only. Selected: \(selected.count); loaded: \(blocks.count).

@@ -473,3 +473,71 @@ prompt. It neither fills the prompt nor starts generation. Users can preview or
 remove the attachment before sending. Attachment confirmation verifies that the
 original chat is still selected and editable; disconnecting mail dismisses the
 picker without attaching anything.
+
+### Quick pattern filters and mailbox identity
+
+In the mail workspace and attachment picker, combine **Поручения**, **Сроки**,
+and **Упоминания меня** with existing text/account/sender filters. **Обо мне…**
+saves the user's name, surname and comma-separated alternative forms per Exchange
+account. Existing profile files remain compatible. Names are matched as whole
+words (including common Russian surname inflections); add other name inflections,
+initials and addresses as alternatives. Matching searches subject and full body,
+not sender metadata. Quotes and signatures can still produce candidates.
+
+**Паттерны и дата срока** accepts comma-separated literal phrases (any phrase
+matches) and an inclusive deadline cutoff. Deadline extraction recognizes dates
+after cues such as «до», «к», «срок», «не позднее», `deadline`, or `due`:
+`18.09.2026`, `18/09/2026`, `2026-09-18`, `18 сентября`, and today/tomorrow/day after
+in Russian. Omitted years and relative days use the message date, not today's date.
+Invalid dates are ignored; unsupported or ambiguous wording may be missed.
+These local rules select candidates, not verified assignments or overdue tasks.
+They do not send mail to a model or make network requests. Identity is included
+with selected mail when it is supplied to the model so follow-up analysis has the
+same user context.
+
+### Search evidence and highlighting
+
+The query accepts words, exact phrases in double quotes, and exclusions such as
+`-рассылка` or `-"не актуально"`. Choose **Все слова** or **Любое слово**; exclusions
+apply in both modes. Matching is literal, case/diacritic insensitive; query text
+is never executed as a regular expression. Pattern filters still combine with
+the query and account/contact filters.
+
+Results show an excerpt around the first body match, with highlighting in both
+the excerpt and message subject. The full-text viewer highlights every active
+match and offers previous/next navigation with a count. Search, assignment,
+deadline, identity and custom-phrase matches use distinct colors and a textual
+legend. Sender-only query matches are highlighted in the sender line. Highlight
+ranges refer to original UTF-16 text, preserving emoji, accented characters and
+copying of the complete message. No mail content is rewritten for display.
+
+Additional task cues include «просьба», «согласовать», «уточните», «заполните» and
+«обновите». Deadline cutoffs now also understand weekday forms after a deadline
+cue (e.g. «к понедельнику», «до пятницы») and «срок: через 3 дня». A weekday means
+the nearest such day from the message date, including that same day; relative
+days are calendar days. This remains local rule-based candidate search, not a
+semantic guarantee of assignment, completion, or overdue status.
+
+### Local task digest without LLM
+
+Switch **Письма → Поручения · без LLM** in the mail workspace. This forces the
+assignment candidate filter and displays verbatim request passages in the list.
+Opening a result shows deduplicated request quotes and separate deadline evidence
+from the same message, with a link to its complete text. Account, group, identity,
+query and deadline filters remain available. No model setup, generation, chat
+attachment or network call is required to inspect the downloaded archive.
+Fetching new messages still uses the mail MCP. The existing connected-mail gate
+for opening the workspace remains in place.
+
+The digest does not infer assignees, bind a date to a specific task, determine
+completion, or paraphrase messages. Quoted requests may be historical or unrelated
+to the user; deadline evidence is explicitly labelled as message-level evidence.
+
+From either mail results or the local task digest, **Обсудить в чате (N)** stages
+all currently matching messages as one full-text Mail attachment. **Обсудить
+письмо** stages the open message. Active task/deadline/identity/query criteria
+travel with the attachment as reference metadata, with an explicit reminder to
+verify candidates against the original bodies. The main chat opens with a draft
+question only if its prompt was empty; existing prompt text is preserved. The
+user can edit and send the question and continue discussing the same attached
+messages. This action does not automatically run the model.

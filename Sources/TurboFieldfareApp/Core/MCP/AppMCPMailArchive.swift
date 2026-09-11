@@ -49,13 +49,13 @@ public final class AppMCPMailArchive {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         messages = updated
     }
-    public func search(_ query: String, profileID: UUID? = nil, senders: Set<String>? = nil) -> [AppMCPStoredMail] {
-        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+    public func search(_ query: String, profileID: UUID? = nil, senders: Set<String>? = nil, anyTerm: Bool = false) -> [AppMCPStoredMail] {
+        let parsed = AppMCPMailSearchQuery(query, anyTerm: anyTerm)
         return messages.filter { mail in
             if let profileID, mail.profileID != profileID { return false }
             if let senders, !senders.contains(mail.header.sender.lowercased()) { return false }
             let text = "\(mail.header.senderName) \(mail.header.sender) \(mail.header.subject) \(mail.body)"
-            return terms.allSatisfy { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+            return parsed.matches(text)
         }
     }
 }
